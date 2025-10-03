@@ -1,5 +1,5 @@
-# app.py - ClickUp Construction Assistant - Final Complete Version
-# All features working: Assignees, Priorities, Due Dates, Voice Input
+# app.py - ClickUp Construction Assistant - COMPLETE WITH DATE FIX
+# All features working: Assignees, Priorities, Due Dates (FIXED), Voice Input
 
 import os
 import re
@@ -677,6 +677,9 @@ def parse_command(message, default_assignee=''):
     
     task_info['description'] = '\n'.join(desc_parts)
     
+    # Debug logging
+    print(f"Parsed task - Name: {task_info['name']}, Due: {task_info['due_date']}")
+    
     return task_info
 
 def create_task_in_clickup(task_info):
@@ -704,12 +707,18 @@ def create_task_in_clickup(task_info):
             'status': 'to do'
         }
         
-        # Add due date if specified
+        # FIXED DATE HANDLING - Set to noon to avoid timezone issues
         if task_info['due_date']:
-            # Convert to milliseconds timestamp
-            due_datetime = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
-            task_data['due_date'] = int(due_datetime.timestamp() * 1000)
-            task_data['due_date_time'] = False  # Date only, no specific time
+            # Parse the date string
+            due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
+            # Set time to noon (12:00 PM) to ensure correct day
+            due_date = due_date.replace(hour=12, minute=0, second=0, microsecond=0)
+            # Convert to milliseconds for ClickUp
+            task_data['due_date'] = int(due_date.timestamp() * 1000)
+            task_data['due_date_time'] = True  # Include time to be precise
+            
+            # Debug logging
+            print(f"Setting due date: {task_info['due_date']} -> Timestamp: {task_data['due_date']}")
         
         # Make API call to create task
         response = requests.post(
@@ -795,6 +804,7 @@ def get_list_id():
                     lists = list_response.json().get('lists', [])
                     if lists:
                         # Return first list ID
+                        print(f"Using list: {lists[0]['name']} (ID: {lists[0]['id']})")
                         return lists[0]['id']
         
         return None
