@@ -1,4 +1,4 @@
-# app.py - ClickUp Construction Assistant - Complete Fixed Version
+# app.py - ClickUp Construction Assistant - Complete Fixed Version with SMS Support
 # Assignees show in task names - no ClickUp accounts needed for field workers!
 
 import os
@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 import requests
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
+from twilio.twiml.messaging_response import MessagingResponse
 
 app = Flask(__name__)
 CORS(app)
@@ -54,7 +55,7 @@ def save_settings(settings):
 # Load initial settings
 SETTINGS = load_settings()
 
-# Main interface HTML
+# Main interface HTML (keeping your existing HTML)
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -124,6 +125,14 @@ HTML_PAGE = """
             margin-top: 15px;
             font-size: 12px;
             display: inline-block;
+        }
+        
+        .sms-status {
+            background: rgba(255,255,255,0.2);
+            padding: 5px 10px;
+            border-radius: 10px;
+            margin-left: 10px;
+            font-size: 11px;
         }
         
         .messages {
@@ -304,6 +313,7 @@ HTML_PAGE = """
             <h1>🏗️ ClickUp Construction Assistant</h1>
             <p>Create tasks with automatic assignee tracking</p>
             <div class="status-bar" id="status">✅ Connected to ClickUp</div>
+            <span class="sms-status" id="smsStatus">📱 SMS Ready</span>
         </div>
         
         <div class="messages" id="messages">
@@ -313,7 +323,8 @@ HTML_PAGE = """
                 📝 "Add urgent task for Mike: Fix water leak"<br>
                 📅 "Sarah needs to install outlets tomorrow"<br>
                 🔨 "Tom should grade the parking lot by Friday"<br><br>
-                Tasks will show as <strong>[Name] Task description</strong> in ClickUp!
+                Tasks will show as <strong>[Name] Task description</strong> in ClickUp!<br><br>
+                📱 <strong>Crew members can also text tasks to your Twilio number!</strong>
             </div>
         </div>
         
@@ -321,7 +332,8 @@ HTML_PAGE = """
             <strong>How tasks appear in ClickUp:</strong><br>
             [Mike] Fix water leak at Building A<br>
             [Sarah] Install outlets in Unit 5<br>
-            [Tom] Grade parking lot
+            [Tom] Grade parking lot<br><br>
+            📱 <strong>SMS Commands:</strong> Text "help" to your Twilio number for instructions
         </div>
         
         <div class="input-section">
@@ -348,6 +360,24 @@ HTML_PAGE = """
     </div>
     
     <script>
+        // Check SMS status
+        async function checkSmsStatus() {
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+                const smsStatus = document.getElementById('smsStatus');
+                if (data.twilio_configured) {
+                    smsStatus.innerHTML = '📱 SMS Active';
+                    smsStatus.style.background = 'rgba(40, 167, 69, 0.2)';
+                } else {
+                    smsStatus.innerHTML = '📱 SMS Not Configured';
+                    smsStatus.style.background = 'rgba(255, 193, 7, 0.2)';
+                }
+            } catch (e) {
+                console.error('Error checking SMS status:', e);
+            }
+        }
+        
         // Load team members and job types
         async function loadSettings() {
             try {
@@ -495,6 +525,7 @@ HTML_PAGE = """
         // Load settings on page load
         window.onload = function() {
             loadSettings();
+            checkSmsStatus();
             document.getElementById('userInput').focus();
         };
         
@@ -515,7 +546,7 @@ HTML_PAGE = """
 </html>
 """
 
-# Settings page HTML
+# Settings page HTML (keeping your existing HTML)
 SETTINGS_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -860,12 +891,18 @@ CLICKUP_KEY = os.getenv('CLICKUP_API_KEY', '')
 WORKSPACE_ID = os.getenv('WORKSPACE_ID', '')
 BASE_URL = 'https://api.clickup.com/api/v2'
 
+# Twilio configuration
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
+TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
+
 # Startup message
 print("=" * 60)
 print("🏗️  ClickUp Construction Assistant")
 print("=" * 60)
 print(f"📌 ClickUp: {'Connected' if CLICKUP_KEY else 'Not configured'}")
 print(f"🏢 Workspace: {WORKSPACE_ID if WORKSPACE_ID else 'Not configured'}")
+print(f"📱 SMS: {'Enabled' if TWILIO_ACCOUNT_SID else 'Not configured'}")
 print(f"📁 Settings: {SETTINGS_FILE}")
 print(f"👥 Assignees: Show in task names [Name] format")
 print("=" * 60)
@@ -928,6 +965,87 @@ def chat():
             'response': '⚠️ An error occurred. Please try again.',
             'success': False
         })
+
+@app.route('/sms', methods=['POST'])
+def handle_sms():
+    """Handle incoming SMS messages"""
+    
+    # Get the message details
+    from_number = request.form.get('From', '')
+    message_body = request.form.get('Body', '').strip()
+    
+    print(f"SMS from {from_number}: {message_body}")
+    
+    # Create response
+    resp = MessagingResponse()
+    
+    # Process the command
+    lower = message_body.lower()
+    
+    if "status" in lower:
+        # Check project status (mock data for now - you could query ClickUp)
+        msg = "📊 Projects:\n"
+        msg += "• Oak St: 70% done\n"
+        msg += "• Maple: 45% done\n"
+        msg += "• Main: Planning"
+        
+    elif "help" in lower:
+        msg = "Commands:\n"
+        msg += "status - projects\n"
+        msg += "add [task] - new task\n"
+        msg += "today - today's tasks\n"
+        msg += "crew - see crews\n"
+        msg += "Example: add Mike: fix leak"
+        
+    elif "today" in lower:
+        msg = "📅 Today:\n"
+        msg += "• Install fixtures\n"
+        msg += "• Grade lot\n"
+        msg += "• Inspection 2pm"
+        
+    elif "crew" in lower:
+        msg = "👷 Crews:\n"
+        for key, member in SETTINGS['team_members'].items():
+            msg += f"{member['name']} - {member['role']}\n"
+            
+    elif "add" in lower or any(word in lower for word in ['fix', 'install', 'check', 'repair', 'build']):
+        # Parse and create task
+        task_info = parse_command(message_body, '')
+        
+        if CLICKUP_KEY and WORKSPACE_ID:
+            result = create_task_in_clickup(task_info)
+            if result['success']:
+                msg = f"✅ Created: {task_info['display_name']}"
+                if task_info['assignee']:
+                    msg += f"\nAssigned: {task_info['assignee']}"
+                if task_info['due_date']:
+                    msg += f"\nDue: {task_info['due_date']}"
+            else:
+                msg = "⚠️ Couldn't create task. Try again."
+        else:
+            msg = f"📝 Noted: {task_info['display_name']}\n⚠️ ClickUp not configured"
+            
+    else:
+        # Try to parse as a task anyway
+        task_info = parse_command(message_body, '')
+        
+        # Check if it looks like a task
+        if any(member['name'].lower() in lower for key, member in SETTINGS['team_members'].items()) or \
+           any(keyword in lower for job in SETTINGS['job_types'].values() for keyword in job['keywords']):
+            # Likely a task
+            if CLICKUP_KEY and WORKSPACE_ID:
+                result = create_task_in_clickup(task_info)
+                if result['success']:
+                    msg = f"✅ Created: {task_info['display_name']}"
+                else:
+                    msg = "⚠️ Couldn't create. Text 'help'"
+            else:
+                msg = f"📝 Noted: {task_info['display_name']}"
+        else:
+            msg = "👋 Text 'help' for commands"
+    
+    resp.message(msg)
+    return str(resp)
 
 def parse_command(message, default_assignee=''):
     """Parse natural language command to extract task details - FIXED VERSION"""
@@ -1248,6 +1366,7 @@ def health():
         'timestamp': datetime.now().isoformat(),
         'clickup': bool(CLICKUP_KEY),
         'workspace': bool(WORKSPACE_ID),
+        'twilio_configured': bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER),
         'settings_loaded': bool(SETTINGS),
         'team_count': len(SETTINGS.get('team_members', {})),
         'job_types_count': len(SETTINGS.get('job_types', {}))
@@ -1260,4 +1379,5 @@ if __name__ == '__main__':
     print(f"🚀 Starting server on port {port}")
     print(f"📱 Main interface: http://localhost:{port}")
     print(f"⚙️  Settings page: http://localhost:{port}/settings")
+    print(f"📱 SMS webhook: http://localhost:{port}/sms")
     app.run(host='0.0.0.0', port=port, debug=False)
