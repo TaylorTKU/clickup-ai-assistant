@@ -447,13 +447,13 @@ class ClickUpAI:
         
         # Initialize OpenAI if available
         self.openai_client = None
-        if self.openai_key:
-            try:
-                from openai import OpenAI
-                self.openai_client = OpenAI(api_key=self.openai_key)
-                print("✅ OpenAI initialized")
-            except ImportError:
-                print("⚠️ OpenAI library not installed")
+        #if self.openai_key:
+        #    try:
+        #        from openai import OpenAI
+        #        self.openai_client = OpenAI(api_key=self.openai_key)
+        #        print("✅ OpenAI initialized")
+        #    except ImportError:
+        #        print("⚠️ OpenAI library not installed")
 
     def process_message(self, message: str, user_id: str = None) -> Dict:
         """Process incoming messages with AI or pattern matching"""
