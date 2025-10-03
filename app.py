@@ -440,10 +440,18 @@ class ClickUpAI:
         self.workspace_id = os.getenv('WORKSPACE_ID', '')
         self.openai_key = os.getenv('OPENAI_API_KEY', '')
         self.headers = {
-            'Authorization': self.clickup_key,
-            'Content-Type': 'application/json'
+        'Authorization': self.clickup_key,
+        'Content-Type': 'application/json'
         }
         self.base_url = 'https://api.clickup.com/api/v2'
+    
+        # Skip OpenAI for now
+        self.openai_client = None
+    
+    # Debug: Print what we loaded
+    print(f"🔑 ClickUp API: {'✅ Configured' if self.clickup_key else '❌ Not found'}")
+    print(f"🏢 Workspace: {'✅ ' + self.workspace_id if self.workspace_id else '❌ Not found'}")
+    print(f"🤖 OpenAI: {'✅ Configured' if self.openai_key else '⏭️ Skipped'}")
         
         # Initialize OpenAI if available
         self.openai_client = None
