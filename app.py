@@ -1,17 +1,58 @@
-# app.py - ClickUp Construction Assistant - COMPLETE WITH DATE FIX
-# All features working: Assignees, Priorities, Due Dates (FIXED), Voice Input
+# app.py - ClickUp Construction Assistant with Settings Management
+# Manage teams and lists through web interface - no code changes needed!
 
 import os
 import re
+import json
 from datetime import datetime, timedelta
 import requests
-from flask import Flask, request, jsonify, render_template_string
+from flask import Flask, request, jsonify, render_template_string, redirect, url_for
 from flask_cors import CORS
 
 app = Flask(__name__)
 CORS(app)
+app.secret_key = os.getenv('SECRET_KEY', 'your-secret-key-here')
 
-# Complete HTML Interface with Voice Support
+# File-based storage for settings (persists across restarts)
+SETTINGS_FILE = 'settings.json'
+
+def load_settings():
+    """Load settings from file or create defaults"""
+    try:
+        with open(SETTINGS_FILE, 'r') as f:
+            return json.load(f)
+    except:
+        # Default settings if file doesn't exist
+        return {
+            'team_members': {
+                'mike': {'name': 'Mike', 'role': 'Plumbing', 'email': ''},
+                'tom': {'name': 'Tom', 'role': 'Grading', 'email': ''},
+                'sarah': {'name': 'Sarah', 'role': 'Electrical', 'email': ''},
+                'john': {'name': 'John', 'role': 'General', 'email': ''}
+            },
+            'job_types': {
+                'plumbing': {'name': 'Plumbing', 'keywords': ['plumb', 'pipe', 'water', 'leak']},
+                'electrical': {'name': 'Electrical', 'keywords': ['electric', 'wire', 'power', 'outlet']},
+                'grading': {'name': 'Grading', 'keywords': ['grade', 'level', 'excavat']},
+                'safety': {'name': 'Safety', 'keywords': ['safety', 'danger', 'hazard']},
+                'inspection': {'name': 'Inspection', 'keywords': ['inspect', 'review']}
+            }
+        }
+
+def save_settings(settings):
+    """Save settings to file"""
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=2)
+        return True
+    except Exception as e:
+        print(f"Error saving settings: {e}")
+        return False
+
+# Load initial settings
+SETTINGS = load_settings()
+
+# Main interface HTML
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -47,6 +88,26 @@ HTML_PAGE = """
             color: white;
             padding: 25px;
             text-align: center;
+            position: relative;
+        }
+        
+        .settings-btn {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(255,255,255,0.2);
+            border: 2px solid white;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .settings-btn:hover {
+            background: white;
+            color: #667eea;
         }
         
         .header h1 {
@@ -114,12 +175,6 @@ HTML_PAGE = """
             color: #155724;
         }
         
-        .message.error {
-            background: #f8d7da;
-            border: 1px solid #f5c6cb;
-            color: #721c24;
-        }
-        
         .input-section {
             padding: 20px;
             background: white;
@@ -163,33 +218,20 @@ HTML_PAGE = """
             box-shadow: 0 8px 20px rgba(102,126,234,0.3);
         }
         
-        .voice-btn {
-            padding: 15px;
-            background: #28a745;
-            color: white;
-            border: none;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
+        .team-select {
+            width: 100%;
+            padding: 10px 15px;
+            border: 2px solid #e9ecef;
+            border-radius: 12px;
+            font-size: 14px;
+            background: white;
             cursor: pointer;
             transition: all 0.3s;
-            font-size: 20px;
         }
         
-        .voice-btn.recording {
-            background: #dc3545;
-            animation: pulse 1s infinite;
-        }
-        
-        @keyframes pulse {
-            0%, 100% { 
-                transform: scale(1); 
-                box-shadow: 0 0 0 0 rgba(220,53,69,0.7);
-            }
-            50% { 
-                transform: scale(1.05);
-                box-shadow: 0 0 0 10px rgba(220,53,69,0);
-            }
+        .team-select:focus {
+            outline: none;
+            border-color: #667eea;
         }
         
         .quick-actions {
@@ -216,7 +258,6 @@ HTML_PAGE = """
         
         .quick-btn:hover {
             border-color: #667eea;
-            background: linear-gradient(135deg, rgba(102,126,234,0.05) 0%, rgba(118,75,162,0.05) 100%);
             transform: translateY(-2px);
             box-shadow: 0 5px 15px rgba(102,126,234,0.2);
         }
@@ -231,65 +272,12 @@ HTML_PAGE = """
             color: #6c757d;
             font-weight: 500;
         }
-        
-        .help-section {
-            padding: 15px 20px;
-            background: #e8f4f8;
-            border-top: 1px solid #d6e9f0;
-            font-size: 14px;
-            color: #495057;
-        }
-        
-        .help-section strong {
-            color: #667eea;
-        }
-        
-        .team-select {
-            width: 100%;
-            padding: 10px 15px;
-            border: 2px solid #e9ecef;
-            border-radius: 12px;
-            font-size: 14px;
-            background: white;
-            cursor: pointer;
-            transition: all 0.3s;
-        }
-        
-        .team-select:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-        
-        @media (max-width: 600px) {
-            .container {
-                border-radius: 0;
-                height: 100vh;
-                display: flex;
-                flex-direction: column;
-            }
-            
-            .messages {
-                height: calc(100vh - 400px);
-                flex: 1;
-            }
-            
-            body {
-                padding: 0;
-            }
-            
-            .quick-grid {
-                grid-template-columns: repeat(3, 1fr);
-            }
-            
-            .quick-label {
-                font-size: 11px;
-            }
-        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
+            <a href="/settings" class="settings-btn">⚙️ Settings</a>
             <h1>🏗️ ClickUp Construction Assistant</h1>
             <p>Create and manage tasks with natural language</p>
             <div class="status-bar" id="status">✅ Connected to ClickUp</div>
@@ -298,11 +286,10 @@ HTML_PAGE = """
         <div class="messages" id="messages">
             <div class="message ai">
                 👋 Welcome! I can help you manage ClickUp tasks. Try these examples:<br><br>
-                📝 <strong>"Add urgent task for Mike: Fix water leak at Building A"</strong><br>
+                📝 <strong>"Add urgent task for Mike: Fix water leak"</strong><br>
                 📅 <strong>"Create task due tomorrow: Order supplies"</strong><br>
                 🔍 <strong>"Schedule inspection for Friday"</strong><br>
-                ⚠️ <strong>"Safety issue: Exposed wiring at Lot 5"</strong><br><br>
-                Click the microphone to use voice commands! 🎤
+                ⚠️ <strong>"Safety issue: Exposed wiring at Lot 5"</strong>
             </div>
         </div>
         
@@ -311,114 +298,107 @@ HTML_PAGE = """
                 <input type="text" 
                        class="input-field" 
                        id="userInput" 
-                       placeholder="Type or speak a command..." 
+                       placeholder="Type a command..." 
                        autocomplete="off"
                        onkeypress="if(event.key==='Enter') sendMessage()">
-                <button class="voice-btn" id="voiceBtn" onclick="toggleVoice()">🎤</button>
                 <button class="send-btn" onclick="sendMessage()">Send</button>
             </div>
             
             <select class="team-select" id="defaultAssignee">
                 <option value="">Select default assignee (optional)</option>
-                <option value="Mike">Mike - Plumbing</option>
-                <option value="Tom">Tom - Grading</option>
-                <option value="Sarah">Sarah - Electrical</option>
-                <option value="John">John - General</option>
             </select>
         </div>
         
         <div class="quick-actions">
-            <div class="quick-grid">
-                <div class="quick-btn" onclick="quickCommand('urgent')">
-                    <div class="quick-icon">🚨</div>
-                    <div class="quick-label">Urgent Task</div>
-                </div>
-                <div class="quick-btn" onclick="quickCommand('mike')">
-                    <div class="quick-icon">👤</div>
-                    <div class="quick-label">For Mike</div>
-                </div>
-                <div class="quick-btn" onclick="quickCommand('tomorrow')">
-                    <div class="quick-icon">📅</div>
-                    <div class="quick-label">Due Tomorrow</div>
-                </div>
-                <div class="quick-btn" onclick="quickCommand('friday')">
-                    <div class="quick-icon">📆</div>
-                    <div class="quick-label">Due Friday</div>
-                </div>
-                <div class="quick-btn" onclick="quickCommand('inspection')">
-                    <div class="quick-icon">🔍</div>
-                    <div class="quick-label">Inspection</div>
-                </div>
-                <div class="quick-btn" onclick="quickCommand('safety')">
-                    <div class="quick-icon">⚠️</div>
-                    <div class="quick-label">Safety Issue</div>
-                </div>
+            <div class="quick-grid" id="quickActions">
+                <!-- Will be populated dynamically -->
             </div>
-        </div>
-        
-        <div class="help-section">
-            💡 <strong>Pro Tips:</strong> Use "urgent" for high priority | Add "for [name]" to assign | Say "tomorrow" or "Friday" for due dates | Use voice input for hands-free operation
         </div>
     </div>
     
     <script>
-        let isRecording = false;
-        let recognition = null;
-        
-        // Initialize speech recognition
-        if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            recognition = new SpeechRecognition();
-            recognition.continuous = false;
-            recognition.interimResults = false;
-            recognition.lang = 'en-US';
-            
-            recognition.onresult = function(event) {
-                const transcript = event.results[0][0].transcript;
-                document.getElementById('userInput').value = transcript;
-                sendMessage();
-                stopRecording();
-            };
-            
-            recognition.onerror = function(event) {
-                console.error('Speech error:', event.error);
-                addMessage('Could not understand. Please try again.', false, false);
-                stopRecording();
-            };
-            
-            recognition.onend = function() {
-                stopRecording();
-            };
+        // Load team members and job types
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                const settings = await response.json();
+                
+                // Update team select
+                const select = document.getElementById('defaultAssignee');
+                select.innerHTML = '<option value="">Select default assignee (optional)</option>';
+                
+                for (const [key, member] of Object.entries(settings.team_members)) {
+                    const option = document.createElement('option');
+                    option.value = member.name;
+                    option.textContent = `${member.name} - ${member.role}`;
+                    select.appendChild(option);
+                }
+                
+                // Update quick actions
+                const quickActions = document.getElementById('quickActions');
+                quickActions.innerHTML = '';
+                
+                // Add standard actions
+                const standardActions = [
+                    {icon: '🚨', label: 'Urgent', command: 'urgent'},
+                    {icon: '📅', label: 'Tomorrow', command: 'tomorrow'},
+                    {icon: '📆', label: 'Friday', command: 'friday'}
+                ];
+                
+                standardActions.forEach(action => {
+                    const btn = createQuickButton(action.icon, action.label, action.command);
+                    quickActions.appendChild(btn);
+                });
+                
+                // Add job type actions
+                for (const [key, job] of Object.entries(settings.job_types)) {
+                    const icons = {
+                        'plumbing': '🔧',
+                        'electrical': '⚡',
+                        'grading': '🚜',
+                        'safety': '⚠️',
+                        'inspection': '🔍'
+                    };
+                    
+                    const btn = createQuickButton(
+                        icons[key] || '📋',
+                        job.name,
+                        key
+                    );
+                    quickActions.appendChild(btn);
+                }
+                
+            } catch (e) {
+                console.error('Error loading settings:', e);
+            }
         }
         
-        function toggleVoice() {
-            if (!recognition) {
-                alert('Voice input is not supported on this device. Please type your command.');
-                return;
-            }
+        function createQuickButton(icon, label, command) {
+            const div = document.createElement('div');
+            div.className = 'quick-btn';
+            div.onclick = () => quickCommand(command);
+            div.innerHTML = `
+                <div class="quick-icon">${icon}</div>
+                <div class="quick-label">${label}</div>
+            `;
+            return div;
+        }
+        
+        function quickCommand(type) {
+            const input = document.getElementById('userInput');
+            const commands = {
+                'urgent': 'Add urgent task: ',
+                'tomorrow': 'Create task due tomorrow: ',
+                'friday': 'Schedule for Friday: ',
+                'plumbing': 'Add plumbing task: ',
+                'electrical': 'Add electrical task: ',
+                'grading': 'Add grading task: ',
+                'safety': 'URGENT safety issue: ',
+                'inspection': 'Schedule inspection: '
+            };
             
-            if (isRecording) {
-                stopRecording();
-            } else {
-                startRecording();
-            }
-        }
-        
-        function startRecording() {
-            recognition.start();
-            isRecording = true;
-            document.getElementById('voiceBtn').classList.add('recording');
-            document.getElementById('voiceBtn').innerHTML = '⏹️';
-            addMessage('🎤 Listening... Speak now', false, false);
-        }
-        
-        function stopRecording() {
-            if (recognition && isRecording) {
-                recognition.stop();
-            }
-            isRecording = false;
-            document.getElementById('voiceBtn').classList.remove('recording');
-            document.getElementById('voiceBtn').innerHTML = '🎤';
+            input.value = commands[type] || `Add ${type} task: `;
+            input.focus();
         }
         
         function addMessage(text, isUser, isSuccess) {
@@ -427,8 +407,6 @@ HTML_PAGE = """
                 div.className = 'message user';
             } else if (isSuccess === true) {
                 div.className = 'message success';
-            } else if (isSuccess === false) {
-                div.className = 'message error';
             } else {
                 div.className = 'message ai';
             }
@@ -460,88 +438,387 @@ HTML_PAGE = """
                 const data = await response.json();
                 addMessage(data.response, false, data.success);
                 
-                // Update status
-                if (data.success) {
-                    updateStatus('✅ Task created successfully!');
-                }
-                
             } catch (error) {
                 addMessage('⚠️ Connection error. Please try again.', false, false);
                 console.error('Error:', error);
             }
         }
         
-        function quickCommand(type) {
-            const input = document.getElementById('userInput');
-            const commands = {
-                'urgent': 'Add urgent task: ',
-                'mike': 'Add task for Mike: ',
-                'tomorrow': 'Create task due tomorrow: ',
-                'friday': 'Schedule for Friday: ',
-                'inspection': 'Schedule inspection: ',
-                'safety': 'URGENT safety issue: '
-            };
-            
-            input.value = commands[type] || '';
-            input.focus();
-        }
-        
-        function updateStatus(text) {
-            const status = document.getElementById('status');
-            status.innerHTML = text;
-            setTimeout(() => {
-                status.innerHTML = '✅ Connected to ClickUp';
-            }, 3000);
-        }
-        
-        // Auto-focus on input
+        // Load settings on page load
         window.onload = function() {
+            loadSettings();
             document.getElementById('userInput').focus();
         };
-        
-        // Check connection periodically
-        setInterval(async () => {
-            try {
-                const response = await fetch('/api/health');
-                const data = await response.json();
-                if (!data.clickup) {
-                    document.getElementById('status').innerHTML = '⚠️ ClickUp not configured';
-                }
-            } catch (e) {
-                document.getElementById('status').innerHTML = '⚠️ Connection issue';
-            }
-        }, 30000);
     </script>
 </body>
 </html>
 """
 
-# Configuration from environment variables
+# Settings page HTML
+SETTINGS_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Settings - ClickUp Assistant</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            text-align: center;
+            position: relative;
+        }
+        
+        .back-btn {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(255,255,255,0.2);
+            border: 2px solid white;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            text-decoration: none;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .back-btn:hover {
+            background: white;
+            color: #667eea;
+        }
+        
+        .settings-section {
+            padding: 30px;
+        }
+        
+        .section-title {
+            font-size: 20px;
+            color: #333;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #e9ecef;
+        }
+        
+        .item-list {
+            margin-bottom: 30px;
+        }
+        
+        .item {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding: 12px;
+            background: #f8f9fa;
+            border-radius: 10px;
+            align-items: center;
+        }
+        
+        .item input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 2px solid #e9ecef;
+            border-radius: 8px;
+            font-size: 14px;
+        }
+        
+        .item input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        .item button {
+            padding: 8px 16px;
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        
+        .item button:hover {
+            background: #c82333;
+        }
+        
+        .add-btn {
+            padding: 10px 20px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+        }
+        
+        .add-btn:hover {
+            background: #218838;
+            transform: translateY(-2px);
+        }
+        
+        .save-btn {
+            padding: 15px 40px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            display: block;
+            margin: 30px auto;
+            transition: all 0.3s;
+        }
+        
+        .save-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 20px rgba(102,126,234,0.3);
+        }
+        
+        .success-message {
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+            padding: 12px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .success-message.show {
+            display: block;
+            animation: fadeIn 0.3s;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <a href="/" class="back-btn">← Back</a>
+            <h1>⚙️ Settings</h1>
+            <p>Manage team members and job types</p>
+        </div>
+        
+        <div class="settings-section">
+            <div class="success-message" id="successMessage">
+                ✅ Settings saved successfully!
+            </div>
+            
+            <div class="section-title">👥 Team Members</div>
+            <div class="item-list" id="teamList"></div>
+            <button class="add-btn" onclick="addTeamMember()">+ Add Team Member</button>
+            
+            <div class="section-title">🔨 Job Types</div>
+            <div class="item-list" id="jobList"></div>
+            <button class="add-btn" onclick="addJobType()">+ Add Job Type</button>
+            
+            <button class="save-btn" onclick="saveSettings()">💾 Save All Settings</button>
+        </div>
+    </div>
+    
+    <script>
+        let settings = {
+            team_members: {},
+            job_types: {}
+        };
+        
+        async function loadSettings() {
+            try {
+                const response = await fetch('/api/settings');
+                settings = await response.json();
+                renderSettings();
+            } catch (e) {
+                console.error('Error loading settings:', e);
+            }
+        }
+        
+        function renderSettings() {
+            // Render team members
+            const teamList = document.getElementById('teamList');
+            teamList.innerHTML = '';
+            
+            for (const [key, member] of Object.entries(settings.team_members)) {
+                const item = document.createElement('div');
+                item.className = 'item';
+                item.innerHTML = `
+                    <input type="text" placeholder="ID" value="${key}" onchange="updateTeamKey('${key}', this.value)">
+                    <input type="text" placeholder="Name" value="${member.name}" onchange="updateTeam('${key}', 'name', this.value)">
+                    <input type="text" placeholder="Role" value="${member.role}" onchange="updateTeam('${key}', 'role', this.value)">
+                    <button onclick="removeTeam('${key}')">Remove</button>
+                `;
+                teamList.appendChild(item);
+            }
+            
+            // Render job types
+            const jobList = document.getElementById('jobList');
+            jobList.innerHTML = '';
+            
+            for (const [key, job] of Object.entries(settings.job_types)) {
+                const item = document.createElement('div');
+                item.className = 'item';
+                item.innerHTML = `
+                    <input type="text" placeholder="ID" value="${key}" onchange="updateJobKey('${key}', this.value)">
+                    <input type="text" placeholder="Name" value="${job.name}" onchange="updateJob('${key}', 'name', this.value)">
+                    <input type="text" placeholder="Keywords (comma-separated)" value="${job.keywords.join(', ')}" onchange="updateJob('${key}', 'keywords', this.value)">
+                    <button onclick="removeJob('${key}')">Remove</button>
+                `;
+                jobList.appendChild(item);
+            }
+        }
+        
+        function updateTeam(key, field, value) {
+            if (settings.team_members[key]) {
+                settings.team_members[key][field] = value;
+            }
+        }
+        
+        function updateTeamKey(oldKey, newKey) {
+            if (oldKey !== newKey && settings.team_members[oldKey]) {
+                settings.team_members[newKey] = settings.team_members[oldKey];
+                delete settings.team_members[oldKey];
+                renderSettings();
+            }
+        }
+        
+        function removeTeam(key) {
+            if (confirm(`Remove ${settings.team_members[key].name}?`)) {
+                delete settings.team_members[key];
+                renderSettings();
+            }
+        }
+        
+        function addTeamMember() {
+            const key = 'new' + Date.now();
+            settings.team_members[key] = {
+                name: 'New Member',
+                role: 'General',
+                email: ''
+            };
+            renderSettings();
+        }
+        
+        function updateJob(key, field, value) {
+            if (settings.job_types[key]) {
+                if (field === 'keywords') {
+                    settings.job_types[key][field] = value.split(',').map(k => k.trim());
+                } else {
+                    settings.job_types[key][field] = value;
+                }
+            }
+        }
+        
+        function updateJobKey(oldKey, newKey) {
+            if (oldKey !== newKey && settings.job_types[oldKey]) {
+                settings.job_types[newKey] = settings.job_types[oldKey];
+                delete settings.job_types[oldKey];
+                renderSettings();
+            }
+        }
+        
+        function removeJob(key) {
+            if (confirm(`Remove ${settings.job_types[key].name}?`)) {
+                delete settings.job_types[key];
+                renderSettings();
+            }
+        }
+        
+        function addJobType() {
+            const key = 'newjob' + Date.now();
+            settings.job_types[key] = {
+                name: 'New Job Type',
+                keywords: []
+            };
+            renderSettings();
+        }
+        
+        async function saveSettings() {
+            try {
+                const response = await fetch('/api/settings', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify(settings)
+                });
+                
+                if (response.ok) {
+                    const successMsg = document.getElementById('successMessage');
+                    successMsg.classList.add('show');
+                    setTimeout(() => {
+                        successMsg.classList.remove('show');
+                    }, 3000);
+                }
+            } catch (e) {
+                alert('Error saving settings: ' + e.message);
+            }
+        }
+        
+        // Load settings on page load
+        window.onload = loadSettings;
+    </script>
+</body>
+</html>
+"""
+
+# Configuration
 CLICKUP_KEY = os.getenv('CLICKUP_API_KEY', '')
 WORKSPACE_ID = os.getenv('WORKSPACE_ID', '')
 BASE_URL = 'https://api.clickup.com/api/v2'
 
-# Team member configuration - customize with your team
-TEAM_MEMBERS = {
-    'mike': {'name': 'Mike', 'role': 'Plumbing'},
-    'tom': {'name': 'Tom', 'role': 'Grading'},
-    'sarah': {'name': 'Sarah', 'role': 'Electrical'},
-    'john': {'name': 'John', 'role': 'General'},
-}
-
-# Startup message
 print("=" * 60)
-print("🏗️  ClickUp Construction Assistant")
+print("🏗️  ClickUp Construction Assistant with Settings")
 print("=" * 60)
 print(f"📌 Status: {'Connected' if CLICKUP_KEY else 'No API Key'}")
 print(f"🏢 Workspace: {WORKSPACE_ID if WORKSPACE_ID else 'Not Configured'}")
-print(f"👥 Team Members: {', '.join([m['name'] for m in TEAM_MEMBERS.values()])}")
+print(f"📁 Settings File: {SETTINGS_FILE}")
 print("=" * 60)
 
 @app.route('/')
 def home():
     """Serve the main interface"""
     return render_template_string(HTML_PAGE)
+
+@app.route('/settings')
+def settings_page():
+    """Serve the settings page"""
+    return render_template_string(SETTINGS_PAGE)
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings():
+    """Get current settings"""
+    return jsonify(SETTINGS)
+
+@app.route('/api/settings', methods=['POST'])
+def update_settings():
+    """Update settings"""
+    global SETTINGS
+    try:
+        new_settings = request.json
+        SETTINGS = new_settings
+        save_settings(SETTINGS)
+        return jsonify({'success': True})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 400
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -576,7 +853,7 @@ def chat():
         })
 
 def parse_command(message, default_assignee=''):
-    """Parse natural language command to extract task details"""
+    """Parse natural language command using dynamic settings"""
     
     original_message = message
     lower = message.lower()
@@ -604,12 +881,12 @@ def parse_command(message, default_assignee=''):
         task_info['priority'] = 1
         task_info['list_type'] = 'safety'
     
-    # Extract assignee
-    for key, member in TEAM_MEMBERS.items():
-        if key in lower or f"for {key}" in lower or f"to {key}" in lower:
+    # Extract assignee from dynamic team members
+    for key, member in SETTINGS['team_members'].items():
+        if key in lower or member['name'].lower() in lower:
             task_info['assignee'] = member['name']
     
-    # Extract due date with proper calculation
+    # Extract due date
     today = datetime.now()
     
     if 'tomorrow' in lower:
@@ -617,25 +894,22 @@ def parse_command(message, default_assignee=''):
     elif 'today' in lower:
         task_info['due_date'] = today.strftime('%Y-%m-%d')
     elif 'friday' in lower:
-        days_until = (4 - today.weekday()) % 7  # 4 = Friday
-        if days_until == 0:  # Today is Friday
-            days_until = 7  # Next Friday
+        days_until = (4 - today.weekday()) % 7
+        if days_until == 0:
+            days_until = 7
         task_info['due_date'] = (today + timedelta(days=days_until)).strftime('%Y-%m-%d')
     elif 'monday' in lower:
-        days_until = (0 - today.weekday()) % 7  # 0 = Monday
-        if days_until == 0:  # Today is Monday
-            days_until = 7  # Next Monday
+        days_until = (0 - today.weekday()) % 7
+        if days_until == 0:
+            days_until = 7
         task_info['due_date'] = (today + timedelta(days=days_until)).strftime('%Y-%m-%d')
     
-    # Detect task type for list assignment
-    if any(word in lower for word in ['plumb', 'pipe', 'water', 'leak', 'faucet']):
-        task_info['list_type'] = 'plumbing'
-    elif any(word in lower for word in ['electric', 'wire', 'power', 'outlet', 'breaker']):
-        task_info['list_type'] = 'electrical'
-    elif any(word in lower for word in ['grade', 'grading', 'level', 'excavat']):
-        task_info['list_type'] = 'grading'
-    elif any(word in lower for word in ['inspect', 'inspection']):
-        task_info['list_type'] = 'inspection'
+    # Detect job type from keywords
+    for job_key, job_data in SETTINGS['job_types'].items():
+        for keyword in job_data.get('keywords', []):
+            if keyword.lower() in lower:
+                task_info['list_type'] = job_key
+                break
     
     # Clean up task name
     clean_name = original_message
@@ -647,17 +921,16 @@ def parse_command(message, default_assignee=''):
     clean_name = re.sub(r'\b(urgent|high priority|low priority|asap)\b\s*', '', clean_name, flags=re.IGNORECASE)
     
     # Remove assignee phrases
-    for key in TEAM_MEMBERS.keys():
-        clean_name = re.sub(f'\\b(for {key}|assign to {key}|to {key})\\b', '', clean_name, flags=re.IGNORECASE)
+    for key, member in SETTINGS['team_members'].items():
+        clean_name = re.sub(f'\\b(for {key}|for {member["name"]}|to {key}|to {member["name"]})\\b', '', clean_name, flags=re.IGNORECASE)
     
     # Remove due date phrases
-    clean_name = re.sub(r'\b(due tomorrow|by tomorrow|due today|by today|due friday|by friday|due monday|by monday|tomorrow|today)\b', '', clean_name, flags=re.IGNORECASE)
+    clean_name = re.sub(r'\b(due tomorrow|by tomorrow|due today|by today|due friday|by friday|tomorrow|today)\b', '', clean_name, flags=re.IGNORECASE)
     
-    # Clean up punctuation and extra spaces
+    # Clean up
     clean_name = re.sub(r':\s*', '', clean_name)
     clean_name = re.sub(r'\s+', ' ', clean_name).strip()
     
-    # Use cleaned name if it's not empty
     if clean_name:
         task_info['name'] = clean_name
     
@@ -669,21 +942,14 @@ def parse_command(message, default_assignee=''):
         desc_parts.append(f"📅 Due: {task_info['due_date']}")
     if task_info['priority'] == 1:
         desc_parts.append("🚨 URGENT PRIORITY")
-    elif task_info['priority'] == 2:
-        desc_parts.append("⚡ HIGH PRIORITY")
     
     desc_parts.append(f"\n⏰ Created: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    desc_parts.append("📱 Via: Construction Assistant")
-    
     task_info['description'] = '\n'.join(desc_parts)
-    
-    # Debug logging
-    print(f"Parsed task - Name: {task_info['name']}, Due: {task_info['due_date']}")
     
     return task_info
 
 def create_task_in_clickup(task_info):
-    """Create a task in ClickUp with the parsed information"""
+    """Create a task in ClickUp"""
     
     try:
         headers = {
@@ -691,15 +957,15 @@ def create_task_in_clickup(task_info):
             'Content-Type': 'application/json'
         }
         
-        # Get the appropriate list
+        # Get list ID
         list_id = get_list_id()
         if not list_id:
             return {
-                'response': '⚠️ Could not find a ClickUp list. Please create one first.',
+                'response': '⚠️ Could not find a ClickUp list.',
                 'success': False
             }
         
-        # Build task data for ClickUp API
+        # Build task data
         task_data = {
             'name': task_info['name'],
             'description': task_info['description'],
@@ -707,20 +973,14 @@ def create_task_in_clickup(task_info):
             'status': 'to do'
         }
         
-        # FIXED DATE HANDLING - Set to noon to avoid timezone issues
+        # Add due date with noon time to avoid timezone issues
         if task_info['due_date']:
-            # Parse the date string
             due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
-            # Set time to noon (12:00 PM) to ensure correct day
             due_date = due_date.replace(hour=12, minute=0, second=0, microsecond=0)
-            # Convert to milliseconds for ClickUp
             task_data['due_date'] = int(due_date.timestamp() * 1000)
-            task_data['due_date_time'] = True  # Include time to be precise
-            
-            # Debug logging
-            print(f"Setting due date: {task_info['due_date']} -> Timestamp: {task_data['due_date']}")
+            task_data['due_date_time'] = True
         
-        # Make API call to create task
+        # Create task
         response = requests.post(
             f'{BASE_URL}/list/{list_id}/task',
             headers=headers,
@@ -729,53 +989,40 @@ def create_task_in_clickup(task_info):
         )
         
         if response.status_code == 200:
-            created_task = response.json()
-            
             # Build success response
-            response_parts = [f"✅ <strong>Task Created Successfully!</strong>"]
-            response_parts.append(f"📝 Task: '{task_info['name']}'")
+            response_parts = [f"✅ <strong>Task Created!</strong>"]
+            response_parts.append(f"📝 '{task_info['name']}'")
             
             if task_info['assignee']:
                 response_parts.append(f"👤 Assigned to: {task_info['assignee']}")
             
             if task_info['priority'] == 1:
                 response_parts.append("🚨 Priority: URGENT")
-            elif task_info['priority'] == 2:
-                response_parts.append("⚡ Priority: HIGH")
             
             if task_info['due_date']:
-                # Format date nicely
                 due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
                 formatted_date = due_date.strftime('%B %d, %Y')
                 response_parts.append(f"📅 Due: {formatted_date}")
             
             return {
                 'response': '<br>'.join(response_parts),
-                'success': True,
-                'task_id': created_task.get('id')
+                'success': True
             }
         else:
-            print(f"ClickUp API error: {response.status_code} - {response.text}")
             return {
-                'response': f"⚠️ Could not create task in ClickUp. Status: {response.status_code}",
+                'response': f"⚠️ Could not create task. Status: {response.status_code}",
                 'success': False
             }
             
-    except requests.exceptions.Timeout:
-        return {
-            'response': '⏱️ ClickUp took too long to respond. Task saved locally.',
-            'success': False
-        }
     except Exception as e:
         print(f"Error creating task: {e}")
         return {
-            'response': '⚠️ Could not connect to ClickUp. Please check your connection.',
+            'response': '⚠️ Connection error.',
             'success': False
         }
 
 def get_list_id():
-    """Get the first available list ID from ClickUp"""
-    
+    """Get the first available list ID"""
     try:
         headers = {'Authorization': CLICKUP_KEY}
         
@@ -790,9 +1037,8 @@ def get_list_id():
         if response.status_code == 200:
             spaces = response.json().get('spaces', [])
             
-            # Get first non-archived space
             for space in spaces:
-                # Get lists in this space
+                # Get lists
                 list_response = requests.get(
                     f'{BASE_URL}/space/{space["id"]}/list',
                     headers=headers,
@@ -803,8 +1049,6 @@ def get_list_id():
                 if list_response.status_code == 200:
                     lists = list_response.json().get('lists', [])
                     if lists:
-                        # Return first list ID
-                        print(f"Using list: {lists[0]['name']} (ID: {lists[0]['id']})")
                         return lists[0]['id']
         
         return None
@@ -816,31 +1060,16 @@ def get_list_id():
 @app.route('/api/health', methods=['GET'])
 def health():
     """Health check endpoint"""
-    
-    health_status = {
+    return jsonify({
         'status': 'healthy',
         'timestamp': datetime.now().isoformat(),
         'clickup': bool(CLICKUP_KEY),
-        'workspace': bool(WORKSPACE_ID)
-    }
-    
-    # Test ClickUp connection if configured
-    if CLICKUP_KEY and WORKSPACE_ID:
-        try:
-            headers = {'Authorization': CLICKUP_KEY}
-            response = requests.get(
-                f'{BASE_URL}/user',
-                headers=headers,
-                timeout=5
-            )
-            health_status['clickup_connected'] = response.status_code == 200
-        except:
-            health_status['clickup_connected'] = False
-    
-    return jsonify(health_status)
+        'workspace': bool(WORKSPACE_ID),
+        'settings_loaded': bool(SETTINGS)
+    })
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 10000))
     print(f"🚀 Starting server on port {port}")
-    print(f"📱 Access at: http://localhost:{port}")
+    print(f"⚙️  Settings page available at: http://localhost:{port}/settings")
     app.run(host='0.0.0.0', port=port, debug=False)
