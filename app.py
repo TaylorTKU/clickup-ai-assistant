@@ -1,4 +1,4 @@
-# app.py - ClickUp Construction Assistant - Complete with Simple Assignee System
+# app.py - ClickUp Construction Assistant - Complete Fixed Version
 # Assignees show in task names - no ClickUp accounts needed for field workers!
 
 import os
@@ -31,13 +31,13 @@ def load_settings():
                 'john': {'name': 'John', 'role': 'General'}
             },
             'job_types': {
-                'plumbing': {'name': 'Plumbing', 'keywords': ['plumb', 'pipe', 'water', 'leak', 'faucet']},
-                'electrical': {'name': 'Electrical', 'keywords': ['electric', 'wire', 'power', 'outlet', 'breaker']},
-                'grading': {'name': 'Grading', 'keywords': ['grade', 'level', 'excavat', 'dirt', 'soil']},
-                'concrete': {'name': 'Concrete', 'keywords': ['concrete', 'pour', 'slab', 'foundation']},
-                'framing': {'name': 'Framing', 'keywords': ['frame', 'wall', 'roof', 'truss']},
-                'safety': {'name': 'Safety', 'keywords': ['safety', 'danger', 'hazard', 'violation']},
-                'inspection': {'name': 'Inspection', 'keywords': ['inspect', 'review', 'check']}
+                'plumbing': {'name': 'Plumbing', 'keywords': ['plumb', 'pipe', 'water', 'leak', 'faucet', 'valve']},
+                'electrical': {'name': 'Electrical', 'keywords': ['electric', 'wire', 'power', 'outlet', 'breaker', 'panel']},
+                'grading': {'name': 'Grading', 'keywords': ['grade', 'level', 'excavat', 'dirt', 'soil', 'slope']},
+                'concrete': {'name': 'Concrete', 'keywords': ['concrete', 'pour', 'slab', 'foundation', 'cement']},
+                'framing': {'name': 'Framing', 'keywords': ['frame', 'wall', 'roof', 'truss', 'stud']},
+                'safety': {'name': 'Safety', 'keywords': ['safety', 'danger', 'hazard', 'violation', 'osha']},
+                'inspection': {'name': 'Inspection', 'keywords': ['inspect', 'review', 'check', 'permit']}
             }
         }
 
@@ -226,6 +226,11 @@ HTML_PAGE = """
             transition: all 0.3s;
         }
         
+        .team-select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
         .quick-actions {
             padding: 20px;
             background: #f8f9fa;
@@ -306,9 +311,9 @@ HTML_PAGE = """
                 👋 Welcome! I'll help you create and track tasks with assignees.<br><br>
                 <strong>Try these commands:</strong><br>
                 📝 "Add urgent task for Mike: Fix water leak"<br>
-                📅 "Create task for Sarah due tomorrow: Install outlets"<br>
-                🔨 "Tom needs to grade the parking lot by Friday"<br><br>
-                Tasks will show as <strong>[Mike] Fix water leak</strong> in ClickUp!
+                📅 "Sarah needs to install outlets tomorrow"<br>
+                🔨 "Tom should grade the parking lot by Friday"<br><br>
+                Tasks will show as <strong>[Name] Task description</strong> in ClickUp!
             </div>
         </div>
         
@@ -925,7 +930,7 @@ def chat():
         })
 
 def parse_command(message, default_assignee=''):
-    """Parse natural language command to extract task details"""
+    """Parse natural language command to extract task details - FIXED VERSION"""
     
     original_message = message
     lower = message.lower()
@@ -955,33 +960,54 @@ def parse_command(message, default_assignee=''):
         task_info['priority'] = 1
         task_info['tags'].append('SAFETY')
     
-    # Extract assignee from team members
+    # Extract assignee from team members - FIXED VERSION with word boundaries
     assignee_found = False
     for key, member in SETTINGS['team_members'].items():
-        # Check for both the key and the full name
-        if (key in lower or 
-            member['name'].lower() in lower or 
-            f"for {key}" in lower or 
-            f"for {member['name'].lower()}" in lower or
-            f"to {key}" in lower or
-            f"to {member['name'].lower()}" in lower):
-            task_info['assignee'] = member['name']
-            assignee_found = True
+        member_name = member['name'].lower()
+        key_lower = key.lower()
+        
+        # Create patterns that check for whole words only
+        patterns = [
+            f"\\bfor {key_lower}\\b",  # "for mike"
+            f"\\bfor {member_name}\\b",  # "for Mike"
+            f"\\bto {key_lower}\\b",  # "to mike"
+            f"\\bto {member_name}\\b",  # "to Mike"
+            f"\\bassign to {key_lower}\\b",  # "assign to mike"
+            f"\\bassign to {member_name}\\b",  # "assign to Mike"
+            f"\\b{key_lower} needs to\\b",  # "mike needs to"
+            f"\\b{member_name} needs to\\b",  # "Mike needs to"
+            f"\\b{key_lower} should\\b",  # "mike should"
+            f"\\b{member_name} should\\b",  # "Mike should"
+            f"\\b{key_lower} must\\b",  # "mike must"
+            f"\\b{member_name} must\\b",  # "Mike must"
+            f"\\b{key_lower}:\\b",  # "mike:"
+            f"\\b{member_name}:\\b",  # "Mike:"
+        ]
+        
+        # Check each pattern
+        for pattern in patterns:
+            if re.search(pattern, lower, re.IGNORECASE):
+                task_info['assignee'] = member['name']
+                assignee_found = True
+                print(f"Found assignee '{member['name']}' using pattern '{pattern}'")
+                break
+        
+        if assignee_found:
             break
     
-    # Extract due date
+    # Extract due date - do this AFTER assignee to avoid conflicts
     today = datetime.now()
     
     if 'tomorrow' in lower:
         task_info['due_date'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
     elif 'today' in lower:
         task_info['due_date'] = today.strftime('%Y-%m-%d')
-    elif 'friday' in lower:
+    elif re.search(r'\bfriday\b', lower):  # Use word boundary for friday
         days_until = (4 - today.weekday()) % 7
         if days_until == 0:
             days_until = 7
         task_info['due_date'] = (today + timedelta(days=days_until)).strftime('%Y-%m-%d')
-    elif 'monday' in lower:
+    elif re.search(r'\bmonday\b', lower):  # Use word boundary for monday
         days_until = (0 - today.weekday()) % 7
         if days_until == 0:
             days_until = 7
@@ -1003,13 +1029,37 @@ def parse_command(message, default_assignee=''):
     # Remove priority words
     clean_name = re.sub(r'\b(urgent|emergency|high priority|low priority|asap)\b\s*', '', clean_name, flags=re.IGNORECASE)
     
-    # Remove assignee phrases
+    # Remove assignee phrases - be more careful with word boundaries
     for key, member in SETTINGS['team_members'].items():
-        # Remove variations of assignee mentions
-        clean_name = re.sub(f'\\b(for {key}|for {member["name"]}|to {key}|to {member["name"]}|assign to {key}|assign to {member["name"]})\\b', '', clean_name, flags=re.IGNORECASE)
+        member_name = member['name']
+        key_lower = key.lower()
+        
+        # Remove variations of assignee mentions with word boundaries
+        patterns_to_remove = [
+            f'\\bfor {key_lower}\\b',
+            f'\\bfor {member_name}\\b',
+            f'\\bto {key_lower}\\b',
+            f'\\bto {member_name}\\b',
+            f'\\bassign to {key_lower}\\b',
+            f'\\bassign to {member_name}\\b',
+            f'\\b{key_lower} needs to\\b',
+            f'\\b{member_name} needs to\\b',
+            f'\\b{key_lower} should\\b',
+            f'\\b{member_name} should\\b',
+            f'\\b{key_lower} must\\b',
+            f'\\b{member_name} must\\b',
+            f'\\b{key_lower}:\\b',
+            f'\\b{member_name}:\\b',
+        ]
+        
+        for pattern in patterns_to_remove:
+            clean_name = re.sub(pattern, '', clean_name, flags=re.IGNORECASE)
     
-    # Remove due date phrases
-    clean_name = re.sub(r'\b(due tomorrow|by tomorrow|due today|by today|due friday|by friday|due monday|by monday|tomorrow|today|friday|monday)\b', '', clean_name, flags=re.IGNORECASE)
+    # Remove due date phrases - be careful with word boundaries
+    clean_name = re.sub(r'\b(due tomorrow|by tomorrow|tomorrow)\b', '', clean_name, flags=re.IGNORECASE)
+    clean_name = re.sub(r'\b(due today|by today|today)\b', '', clean_name, flags=re.IGNORECASE)
+    clean_name = re.sub(r'\b(due friday|by friday|friday)\b', '', clean_name, flags=re.IGNORECASE)
+    clean_name = re.sub(r'\b(due monday|by monday|monday)\b', '', clean_name, flags=re.IGNORECASE)
     
     # Clean up punctuation and extra spaces
     clean_name = re.sub(r':\s*', '', clean_name)
