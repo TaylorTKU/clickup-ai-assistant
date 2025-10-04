@@ -1,5 +1,5 @@
-# app.py - ClickUp Construction Assistant - Complete Fixed Version with SMS Support
-# Assignees show in task names - no ClickUp accounts needed for field workers!
+# app.py - ClickUp Construction Assistant with Project Creation
+# Complete version with SMS support and dynamic project creation
 
 import os
 import re
@@ -39,7 +39,8 @@ def load_settings():
                 'framing': {'name': 'Framing', 'keywords': ['frame', 'wall', 'roof', 'truss', 'stud']},
                 'safety': {'name': 'Safety', 'keywords': ['safety', 'danger', 'hazard', 'violation', 'osha']},
                 'inspection': {'name': 'Inspection', 'keywords': ['inspect', 'review', 'check', 'permit']}
-            }
+            },
+            'projects': {}  # Will store created projects
         }
 
 def save_settings(settings):
@@ -55,7 +56,7 @@ def save_settings(settings):
 # Load initial settings
 SETTINGS = load_settings()
 
-# Main interface HTML (keeping your existing HTML)
+# Main interface HTML with project creation support
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -224,8 +225,14 @@ HTML_PAGE = """
             box-shadow: 0 8px 20px rgba(102,126,234,0.3);
         }
         
-        .team-select {
-            width: 100%;
+        .select-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        
+        .select-field {
+            flex: 1;
             padding: 10px 15px;
             border: 2px solid #e9ecef;
             border-radius: 12px;
@@ -235,7 +242,7 @@ HTML_PAGE = """
             transition: all 0.3s;
         }
         
-        .team-select:focus {
+        .select-field:focus {
             outline: none;
             border-color: #667eea;
         }
@@ -292,6 +299,15 @@ HTML_PAGE = """
             color: #667eea;
         }
         
+        .project-badge {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 10px;
+            font-size: 11px;
+            margin-left: 5px;
+        }
+        
         @media (max-width: 600px) {
             .container {
                 border-radius: 0;
@@ -311,45 +327,50 @@ HTML_PAGE = """
         <div class="header">
             <a href="/settings" class="settings-btn">⚙️ Settings</a>
             <h1>🏗️ ClickUp Construction Assistant</h1>
-            <p>Create tasks with automatic assignee tracking</p>
+            <p>Create projects and tasks with automatic tracking</p>
             <div class="status-bar" id="status">✅ Connected to ClickUp</div>
             <span class="sms-status" id="smsStatus">📱 SMS Ready</span>
         </div>
         
         <div class="messages" id="messages">
             <div class="message ai">
-                👋 Welcome! I'll help you create and track tasks with assignees.<br><br>
-                <strong>Try these commands:</strong><br>
-                📝 "Add urgent task for Mike: Fix water leak"<br>
-                📅 "Sarah needs to install outlets tomorrow"<br>
-                🔨 "Tom should grade the parking lot by Friday"<br><br>
-                Tasks will show as <strong>[Name] Task description</strong> in ClickUp!<br><br>
-                📱 <strong>Crew members can also text tasks to your Twilio number!</strong>
+                👋 Welcome! I can help you create projects and manage tasks.<br><br>
+                <strong>Create Projects:</strong><br>
+                🏗️ "Create project Oak Street"<br>
+                🏗️ "New project Busbee with water and sewer"<br><br>
+                <strong>Add Tasks to Projects:</strong><br>
+                📝 "oak: Mike needs to fix water leak"<br>
+                📝 "Add task for Sarah: Install outlets tomorrow"<br><br>
+                Tasks show as <strong>[Name] Task description</strong> in ClickUp!
             </div>
         </div>
         
         <div class="task-example">
-            <strong>How tasks appear in ClickUp:</strong><br>
-            [Mike] Fix water leak at Building A<br>
-            [Sarah] Install outlets in Unit 5<br>
-            [Tom] Grade parking lot<br><br>
-            📱 <strong>SMS Commands:</strong> Text "help" to your Twilio number for instructions
+            <strong>Examples:</strong><br>
+            Create project: "create project Downtown"<br>
+            Add to project: "downtown: fix leak" or select project below<br>
+            📱 SMS works too! Text commands to your Twilio number
         </div>
         
         <div class="input-section">
+            <div class="select-group">
+                <select class="select-field" id="projectSelect">
+                    <option value="">Auto-detect project</option>
+                </select>
+                <select class="select-field" id="defaultAssignee">
+                    <option value="">No default assignee</option>
+                </select>
+            </div>
+            
             <div class="input-group">
                 <input type="text" 
                        class="input-field" 
                        id="userInput" 
-                       placeholder="Type a command..." 
+                       placeholder="Create project or add task..." 
                        autocomplete="off"
                        onkeypress="if(event.key==='Enter') sendMessage()">
                 <button class="send-btn" onclick="sendMessage()">Send</button>
             </div>
-            
-            <select class="team-select" id="defaultAssignee">
-                <option value="">No default assignee</option>
-            </select>
         </div>
         
         <div class="quick-actions">
@@ -360,31 +381,26 @@ HTML_PAGE = """
     </div>
     
     <script>
-        // Check SMS status
-        async function checkSmsStatus() {
-            try {
-                const response = await fetch('/api/health');
-                const data = await response.json();
-                const smsStatus = document.getElementById('smsStatus');
-                if (data.twilio_configured) {
-                    smsStatus.innerHTML = '📱 SMS Active';
-                    smsStatus.style.background = 'rgba(40, 167, 69, 0.2)';
-                } else {
-                    smsStatus.innerHTML = '📱 SMS Not Configured';
-                    smsStatus.style.background = 'rgba(255, 193, 7, 0.2)';
-                }
-            } catch (e) {
-                console.error('Error checking SMS status:', e);
-            }
-        }
-        
-        // Load team members and job types
+        // Load settings and projects
         async function loadSettings() {
             try {
                 const response = await fetch('/api/settings');
                 const settings = await response.json();
                 
-                // Update team select
+                // Update project select
+                const projectSelect = document.getElementById('projectSelect');
+                projectSelect.innerHTML = '<option value="">Auto-detect project</option>';
+                
+                if (settings.projects) {
+                    for (const [key, project] of Object.entries(settings.projects)) {
+                        const option = document.createElement('option');
+                        option.value = project.list_id;
+                        option.textContent = project.name;
+                        projectSelect.appendChild(option);
+                    }
+                }
+                
+                // Update assignee select
                 const select = document.getElementById('defaultAssignee');
                 select.innerHTML = '<option value="">No default assignee</option>';
                 
@@ -396,61 +412,45 @@ HTML_PAGE = """
                 }
                 
                 // Update quick actions
-                const quickActions = document.getElementById('quickActions');
-                quickActions.innerHTML = '';
+                updateQuickActions(settings);
                 
-                // Add urgent and date actions
-                const actions = [
-                    {icon: '🚨', label: 'Urgent', command: 'urgent'},
-                    {icon: '📅', label: 'Tomorrow', command: 'tomorrow'},
-                    {icon: '📆', label: 'Friday', command: 'friday'}
-                ];
-                
-                // Add team member actions
-                for (const [key, member] of Object.entries(settings.team_members)) {
+            } catch (e) {
+                console.error('Error loading settings:', e);
+            }
+        }
+        
+        function updateQuickActions(settings) {
+            const quickActions = document.getElementById('quickActions');
+            quickActions.innerHTML = '';
+            
+            const actions = [
+                {icon: '🏗️', label: 'New Project', command: 'create project '},
+                {icon: '🚨', label: 'Urgent', command: 'urgent'},
+                {icon: '📅', label: 'Tomorrow', command: 'tomorrow'}
+            ];
+            
+            // Add team member actions
+            for (const [key, member] of Object.entries(settings.team_members)) {
+                if (actions.length < 9) {
                     actions.push({
                         icon: '👤',
                         label: member.name,
                         command: `for ${member.name}: `
                     });
                 }
-                
-                // Add job type actions
-                const jobIcons = {
-                    'plumbing': '🔧',
-                    'electrical': '⚡',
-                    'grading': '🚜',
-                    'concrete': '🏗️',
-                    'framing': '🏠',
-                    'safety': '⚠️',
-                    'inspection': '🔍'
-                };
-                
-                for (const [key, job] of Object.entries(settings.job_types)) {
-                    if (actions.length < 12) { // Limit quick actions
-                        actions.push({
-                            icon: jobIcons[key] || '📋',
-                            label: job.name,
-                            command: `${key}`
-                        });
-                    }
-                }
-                
-                // Create buttons
-                actions.forEach(action => {
-                    const btn = document.createElement('div');
-                    btn.className = 'quick-btn';
-                    btn.onclick = () => quickCommand(action.command);
-                    btn.innerHTML = `
-                        <div class="quick-icon">${action.icon}</div>
-                        <div class="quick-label">${action.label}</div>
-                    `;
-                    quickActions.appendChild(btn);
-                });
-                
-            } catch (e) {
-                console.error('Error loading settings:', e);
             }
+            
+            // Create buttons
+            actions.forEach(action => {
+                const btn = document.createElement('div');
+                btn.className = 'quick-btn';
+                btn.onclick = () => quickCommand(action.command);
+                btn.innerHTML = `
+                    <div class="quick-icon">${action.icon}</div>
+                    <div class="quick-label">${action.label}</div>
+                `;
+                quickActions.appendChild(btn);
+            });
         }
         
         function quickCommand(command) {
@@ -460,12 +460,8 @@ HTML_PAGE = """
                 input.value = 'Add urgent task: ';
             } else if (command === 'tomorrow') {
                 input.value = 'Create task due tomorrow: ';
-            } else if (command === 'friday') {
-                input.value = 'Schedule for Friday: ';
-            } else if (command.startsWith('for ')) {
-                input.value = `Add task ${command}`;
             } else {
-                input.value = `Add ${command} task: `;
+                input.value = command;
             }
             
             input.focus();
@@ -490,6 +486,7 @@ HTML_PAGE = """
             const msg = input.value.trim();
             if (!msg) return;
             
+            const projectSelect = document.getElementById('projectSelect').value;
             const defaultAssignee = document.getElementById('defaultAssignee').value;
             
             addMessage(msg, true);
@@ -501,16 +498,23 @@ HTML_PAGE = """
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         message: msg,
-                        default_assignee: defaultAssignee
+                        default_assignee: defaultAssignee,
+                        project_list_id: projectSelect
                     })
                 });
                 
                 const data = await response.json();
                 addMessage(data.response, false, data.success);
                 
+                // Reload projects if a new one was created
+                if (data.project_created) {
+                    loadSettings();
+                }
+                
                 // Update status
                 if (data.success) {
-                    document.getElementById('status').innerHTML = '✅ Task created successfully!';
+                    document.getElementById('status').innerHTML = data.project_created ? 
+                        '✅ Project created!' : '✅ Task created!';
                     setTimeout(() => {
                         document.getElementById('status').innerHTML = '✅ Connected to ClickUp';
                     }, 3000);
@@ -522,31 +526,39 @@ HTML_PAGE = """
             }
         }
         
-        // Load settings on page load
+        // Check SMS status
+        async function checkSmsStatus() {
+            try {
+                const response = await fetch('/api/health');
+                const data = await response.json();
+                const smsStatus = document.getElementById('smsStatus');
+                if (data.twilio_configured) {
+                    smsStatus.innerHTML = '📱 SMS Active';
+                    smsStatus.style.background = 'rgba(40, 167, 69, 0.2)';
+                } else {
+                    smsStatus.innerHTML = '📱 SMS Not Configured';
+                    smsStatus.style.background = 'rgba(255, 193, 7, 0.2)';
+                }
+            } catch (e) {
+                console.error('Error checking SMS status:', e);
+            }
+        }
+        
+        // Load on page load
         window.onload = function() {
             loadSettings();
             checkSmsStatus();
             document.getElementById('userInput').focus();
         };
         
-        // Check connection periodically
-        setInterval(async () => {
-            try {
-                const response = await fetch('/api/health');
-                const data = await response.json();
-                if (!data.clickup) {
-                    document.getElementById('status').innerHTML = '⚠️ ClickUp not configured';
-                }
-            } catch (e) {
-                document.getElementById('status').innerHTML = '⚠️ Connection issue';
-            }
-        }, 30000);
+        // Refresh projects periodically
+        setInterval(loadSettings, 30000);
     </script>
 </body>
 </html>
 """
 
-# Settings page HTML (keeping your existing HTML)
+# Settings page HTML (keeping existing)
 SETTINGS_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -712,6 +724,11 @@ SETTINGS_PAGE = """
             font-size: 13px;
             color: #333;
         }
+        
+        .project-item {
+            background: #e8f4ff;
+            border-left: 4px solid #667eea;
+        }
     </style>
 </head>
 <body>
@@ -719,13 +736,19 @@ SETTINGS_PAGE = """
         <div class="header">
             <a href="/" class="back-btn">← Back</a>
             <h1>⚙️ Settings</h1>
-            <p>Manage team members and job types</p>
+            <p>Manage team members, job types, and projects</p>
         </div>
         
         <div class="settings-section">
             <div class="success-message" id="successMessage">
                 ✅ Settings saved successfully!
             </div>
+            
+            <div class="section-title">🏗️ Active Projects</div>
+            <div class="help-text">
+                These projects have been created in ClickUp. Use the project keyword to route tasks.
+            </div>
+            <div class="item-list" id="projectList"></div>
             
             <div class="section-title">👥 Team Members</div>
             <div class="help-text">
@@ -748,7 +771,8 @@ SETTINGS_PAGE = """
     <script>
         let settings = {
             team_members: {},
-            job_types: {}
+            job_types: {},
+            projects: {}
         };
         
         async function loadSettings() {
@@ -762,6 +786,26 @@ SETTINGS_PAGE = """
         }
         
         function renderSettings() {
+            // Render projects
+            const projectList = document.getElementById('projectList');
+            projectList.innerHTML = '';
+            
+            if (settings.projects) {
+                for (const [key, project] of Object.entries(settings.projects)) {
+                    const item = document.createElement('div');
+                    item.className = 'item project-item';
+                    item.innerHTML = `
+                        <span style="flex: 1"><strong>${project.name}</strong> - Use "${key}:" to add tasks here</span>
+                        <button onclick="removeProject('${key}')">Remove</button>
+                    `;
+                    projectList.appendChild(item);
+                }
+            }
+            
+            if (Object.keys(settings.projects || {}).length === 0) {
+                projectList.innerHTML = '<p style="color: #666; font-style: italic;">No projects yet. Create one from the main page!</p>';
+            }
+            
             // Render team members
             const teamList = document.getElementById('teamList');
             teamList.innerHTML = '';
@@ -792,6 +836,13 @@ SETTINGS_PAGE = """
                     <button onclick="removeJob('${key}')">Remove</button>
                 `;
                 jobList.appendChild(item);
+            }
+        }
+        
+        function removeProject(key) {
+            if (confirm(`Remove project ${settings.projects[key].name}? This only removes it from settings, not ClickUp.`)) {
+                delete settings.projects[key];
+                renderSettings();
             }
         }
         
@@ -904,7 +955,6 @@ print(f"📌 ClickUp: {'Connected' if CLICKUP_KEY else 'Not configured'}")
 print(f"🏢 Workspace: {WORKSPACE_ID if WORKSPACE_ID else 'Not configured'}")
 print(f"📱 SMS: {'Enabled' if TWILIO_ACCOUNT_SID else 'Not configured'}")
 print(f"📁 Settings: {SETTINGS_FILE}")
-print(f"👥 Assignees: Show in task names [Name] format")
 print("=" * 60)
 
 @app.route('/')
@@ -934,256 +984,253 @@ def update_settings():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 400
 
-@app.route('/api/chat', methods=['POST'])
-def chat():
-    """Process chat messages and create tasks"""
+def create_project_in_clickup(project_name, trades=None):
+    """Create a new project (list) in ClickUp"""
+    
+    headers = {
+        'Authorization': CLICKUP_KEY,
+        'Content-Type': 'application/json'
+    }
+    
     try:
-        data = request.json
-        message = data.get('message', '').strip()
-        default_assignee = data.get('default_assignee', '')
+        # Get the first available space
+        space_response = requests.get(
+            f'{BASE_URL}/team/{WORKSPACE_ID}/space',
+            headers=headers,
+            params={'archived': 'false'},
+            timeout=10
+        )
         
-        if not message:
-            return jsonify({'response': 'Please provide a message', 'success': False})
+        if space_response.status_code != 200:
+            return {'success': False, 'error': 'Could not find space'}
         
-        # Parse the command
-        task_info = parse_command(message, default_assignee)
+        spaces = space_response.json().get('spaces', [])
+        if not spaces:
+            return {'success': False, 'error': 'No spaces found'}
         
-        # Create the task in ClickUp
-        if CLICKUP_KEY and WORKSPACE_ID:
-            result = create_task_in_clickup(task_info)
-        else:
-            result = {
-                'response': f"📝 Task noted locally: '{task_info['display_name']}'<br>⚠️ Configure ClickUp API in environment variables to sync",
-                'success': False
-            }
+        space_id = spaces[0]['id']
         
-        return jsonify(result)
+        # Create the new list (project)
+        list_data = {
+            'name': project_name,
+            'content': f'Project created via Construction Assistant',
+        }
+        
+        list_response = requests.post(
+            f'{BASE_URL}/space/{space_id}/list',
+            headers=headers,
+            json=list_data,
+            timeout=10
+        )
+        
+        if list_response.status_code != 200:
+            print(f"Error creating list: {list_response.text}")
+            return {'success': False, 'error': 'Could not create project'}
+        
+        new_list = list_response.json()
+        list_id = new_list['id']
+        
+        # Create starter tasks if trades specified
+        created_trades = []
+        if trades:
+            for trade in trades:
+                task_data = {
+                    'name': f'{trade} Work - {project_name}',
+                    'description': f'Standard {trade} tasks for this project\n\nCreated via Construction Assistant',
+                    'status': 'to do',
+                    'priority': 3
+                }
+                
+                task_response = requests.post(
+                    f'{BASE_URL}/list/{list_id}/task',
+                    headers=headers,
+                    json=task_data,
+                    timeout=10
+                )
+                
+                if task_response.status_code == 200:
+                    created_trades.append(trade)
+        
+        # Save to settings
+        simple_name = project_name.lower().split()[0]
+        if 'projects' not in SETTINGS:
+            SETTINGS['projects'] = {}
+        
+        SETTINGS['projects'][simple_name] = {
+            'list_id': list_id,
+            'name': project_name,
+            'created': datetime.now().isoformat(),
+            'trades': created_trades
+        }
+        save_settings(SETTINGS)
+        
+        return {
+            'success': True,
+            'list_id': list_id,
+            'name': project_name,
+            'simple_name': simple_name,
+            'trades': created_trades
+        }
         
     except Exception as e:
-        print(f"Error in chat endpoint: {e}")
-        return jsonify({
-            'response': '⚠️ An error occurred. Please try again.',
-            'success': False
-        })
+        print(f"Error creating project: {e}")
+        return {'success': False, 'error': str(e)}
 
-@app.route('/sms', methods=['POST'])
-def handle_sms():
-    """Handle incoming SMS messages"""
+def detect_project_from_message(message):
+    """Detect which project a task belongs to"""
+    lower = message.lower()
     
-    # Get the message details
-    from_number = request.form.get('From', '')
-    message_body = request.form.get('Body', '').strip()
+    # Check for project prefix patterns
+    for key, project in SETTINGS.get('projects', {}).items():
+        # Check for "project:" or "project -" format
+        if lower.startswith(key + ':') or lower.startswith(key + ' -'):
+            return project['list_id'], key
+        # Check if project name is mentioned
+        if key in lower:
+            return project['list_id'], key
     
-    print(f"SMS from {from_number}: {message_body}")
-    
-    # Create response
-    resp = MessagingResponse()
-    
-    # Process the command
-    lower = message_body.lower()
-    
-    if "status" in lower:
-        # Check project status (mock data for now - you could query ClickUp)
-        msg = "📊 Projects:\n"
-        msg += "• Oak St: 70% done\n"
-        msg += "• Maple: 45% done\n"
-        msg += "• Main: Planning"
-        
-    elif "help" in lower:
-        msg = "Commands:\n"
-        msg += "status - projects\n"
-        msg += "add [task] - new task\n"
-        msg += "today - today's tasks\n"
-        msg += "crew - see crews\n"
-        msg += "Example: add Mike: fix leak"
-        
-    elif "today" in lower:
-        msg = "📅 Today:\n"
-        msg += "• Install fixtures\n"
-        msg += "• Grade lot\n"
-        msg += "• Inspection 2pm"
-        
-    elif "crew" in lower:
-        msg = "👷 Crews:\n"
-        for key, member in SETTINGS['team_members'].items():
-            msg += f"{member['name']} - {member['role']}\n"
-            
-    elif "add" in lower or any(word in lower for word in ['fix', 'install', 'check', 'repair', 'build']):
-        # Parse and create task
-        task_info = parse_command(message_body, '')
-        
-        if CLICKUP_KEY and WORKSPACE_ID:
-            result = create_task_in_clickup(task_info)
-            if result['success']:
-                msg = f"✅ Created: {task_info['display_name']}"
-                if task_info['assignee']:
-                    msg += f"\nAssigned: {task_info['assignee']}"
-                if task_info['due_date']:
-                    msg += f"\nDue: {task_info['due_date']}"
-            else:
-                msg = "⚠️ Couldn't create task. Try again."
-        else:
-            msg = f"📝 Noted: {task_info['display_name']}\n⚠️ ClickUp not configured"
-            
-    else:
-        # Try to parse as a task anyway
-        task_info = parse_command(message_body, '')
-        
-        # Check if it looks like a task
-        if any(member['name'].lower() in lower for key, member in SETTINGS['team_members'].items()) or \
-           any(keyword in lower for job in SETTINGS['job_types'].values() for keyword in job['keywords']):
-            # Likely a task
-            if CLICKUP_KEY and WORKSPACE_ID:
-                result = create_task_in_clickup(task_info)
-                if result['success']:
-                    msg = f"✅ Created: {task_info['display_name']}"
-                else:
-                    msg = "⚠️ Couldn't create. Text 'help'"
-            else:
-                msg = f"📝 Noted: {task_info['display_name']}"
-        else:
-            msg = "👋 Text 'help' for commands"
-    
-    resp.message(msg)
-    return str(resp)
+    return None, None
 
-def parse_command(message, default_assignee=''):
-    """Parse natural language command to extract task details - FIXED VERSION"""
+def parse_command(message, default_assignee='', project_list_id=None):
+    """Enhanced parser that detects project creation and task assignment"""
     
     original_message = message
     lower = message.lower()
     
-    # Initialize task info
+    # Check if this is a project creation command
+    if any(phrase in lower for phrase in ['create project', 'new project', 'start project', 'make project']):
+        # Extract project name
+        project_name = None
+        
+        # Try different patterns
+        patterns = [
+            r'(?:create|new|start|make) project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
+            r'project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, lower)
+            if match:
+                project_name = match.group(1).strip()
+                break
+        
+        if not project_name:
+            return {'type': 'error', 'message': 'Please specify a project name. Example: "create project Oak Street"'}
+        
+        # Check for trades
+        trades = []
+        trade_keywords = {
+            'water': 'Water',
+            'sewer': 'Sewer', 
+            'storm': 'Storm',
+            'grading': 'Grading',
+            'grade': 'Grading',
+            'electrical': 'Electrical',
+            'electric': 'Electrical',
+            'concrete': 'Concrete',
+            'plumbing': 'Plumbing',
+            'plumb': 'Plumbing'
+        }
+        
+        for keyword, trade_name in trade_keywords.items():
+            if keyword in lower and trade_name not in trades:
+                trades.append(trade_name)
+        
+        return {
+            'type': 'create_project',
+            'project_name': project_name.title(),
+            'trades': trades
+        }
+    
+    # Otherwise, parse as regular task
     task_info = {
-        'name': message,  # Original task name without assignee
-        'display_name': message,  # Task name with [Assignee] prefix
-        'priority': 3,  # Normal
+        'type': 'create_task',
+        'name': message,
+        'display_name': message,
+        'priority': 3,
         'assignee': default_assignee,
         'due_date': None,
         'description': '',
-        'tags': []
+        'tags': [],
+        'list_id': project_list_id
     }
+    
+    # Detect project from message if not specified
+    if not task_info['list_id']:
+        list_id, project_key = detect_project_from_message(message)
+        if list_id:
+            task_info['list_id'] = list_id
+            # Remove project prefix from task name
+            for prefix in [f'{project_key}:', f'{project_key} -', project_key]:
+                if lower.startswith(prefix):
+                    message = message[len(prefix):].strip()
+                    task_info['name'] = message
+                    lower = message.lower()
+                    break
     
     # Extract priority
     if any(word in lower for word in ['urgent', 'emergency', 'critical', 'asap']):
-        task_info['priority'] = 1  # Urgent
+        task_info['priority'] = 1
         task_info['tags'].append('URGENT')
     elif any(word in lower for word in ['high', 'important']):
-        task_info['priority'] = 2  # High
+        task_info['priority'] = 2
     elif any(word in lower for word in ['low', 'whenever']):
-        task_info['priority'] = 4  # Low
+        task_info['priority'] = 4
     
     # Safety issues are always urgent
     if 'safety' in lower:
         task_info['priority'] = 1
         task_info['tags'].append('SAFETY')
     
-    # Extract assignee from team members - FIXED VERSION with word boundaries
+    # Extract assignee
     assignee_found = False
     for key, member in SETTINGS['team_members'].items():
         member_name = member['name'].lower()
         key_lower = key.lower()
         
-        # Create patterns that check for whole words only
         patterns = [
-            f"\\bfor {key_lower}\\b",  # "for mike"
-            f"\\bfor {member_name}\\b",  # "for Mike"
-            f"\\bto {key_lower}\\b",  # "to mike"
-            f"\\bto {member_name}\\b",  # "to Mike"
-            f"\\bassign to {key_lower}\\b",  # "assign to mike"
-            f"\\bassign to {member_name}\\b",  # "assign to Mike"
-            f"\\b{key_lower} needs to\\b",  # "mike needs to"
-            f"\\b{member_name} needs to\\b",  # "Mike needs to"
-            f"\\b{key_lower} should\\b",  # "mike should"
-            f"\\b{member_name} should\\b",  # "Mike should"
-            f"\\b{key_lower} must\\b",  # "mike must"
-            f"\\b{member_name} must\\b",  # "Mike must"
-            f"\\b{key_lower}:\\b",  # "mike:"
-            f"\\b{member_name}:\\b",  # "Mike:"
+            f"\\bfor {key_lower}\\b",
+            f"\\bfor {member_name}\\b",
+            f"\\b{key_lower} needs to\\b",
+            f"\\b{member_name} needs to\\b",
+            f"\\b{key_lower}:\\b",
+            f"\\b{member_name}:\\b",
         ]
         
-        # Check each pattern
         for pattern in patterns:
             if re.search(pattern, lower, re.IGNORECASE):
                 task_info['assignee'] = member['name']
                 assignee_found = True
-                print(f"Found assignee '{member['name']}' using pattern '{pattern}'")
                 break
         
         if assignee_found:
             break
     
-    # Extract due date - do this AFTER assignee to avoid conflicts
+    # Extract due date
     today = datetime.now()
     
     if 'tomorrow' in lower:
         task_info['due_date'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
     elif 'today' in lower:
         task_info['due_date'] = today.strftime('%Y-%m-%d')
-    elif re.search(r'\bfriday\b', lower):  # Use word boundary for friday
+    elif re.search(r'\bfriday\b', lower):
         days_until = (4 - today.weekday()) % 7
         if days_until == 0:
             days_until = 7
         task_info['due_date'] = (today + timedelta(days=days_until)).strftime('%Y-%m-%d')
-    elif re.search(r'\bmonday\b', lower):  # Use word boundary for monday
-        days_until = (0 - today.weekday()) % 7
-        if days_until == 0:
-            days_until = 7
-        task_info['due_date'] = (today + timedelta(days=days_until)).strftime('%Y-%m-%d')
     
-    # Detect job type and add as tag
-    for job_key, job_data in SETTINGS['job_types'].items():
-        for keyword in job_data.get('keywords', []):
-            if keyword.lower() in lower:
-                task_info['tags'].append(job_data['name'])
-                break
-    
-    # Clean up task name (remove command words and assignee references)
-    clean_name = original_message
-    
-    # Remove command prefixes
+    # Clean up task name
+    clean_name = message
     clean_name = re.sub(r'^(add|create|schedule|new)\s+(task\s+)?', '', clean_name, flags=re.IGNORECASE)
-    
-    # Remove priority words
     clean_name = re.sub(r'\b(urgent|emergency|high priority|low priority|asap)\b\s*', '', clean_name, flags=re.IGNORECASE)
     
-    # Remove assignee phrases - be more careful with word boundaries
+    # Remove assignee phrases
     for key, member in SETTINGS['team_members'].items():
-        member_name = member['name']
-        key_lower = key.lower()
-        
-        # Remove variations of assignee mentions with word boundaries
-        patterns_to_remove = [
-            f'\\bfor {key_lower}\\b',
-            f'\\bfor {member_name}\\b',
-            f'\\bto {key_lower}\\b',
-            f'\\bto {member_name}\\b',
-            f'\\bassign to {key_lower}\\b',
-            f'\\bassign to {member_name}\\b',
-            f'\\b{key_lower} needs to\\b',
-            f'\\b{member_name} needs to\\b',
-            f'\\b{key_lower} should\\b',
-            f'\\b{member_name} should\\b',
-            f'\\b{key_lower} must\\b',
-            f'\\b{member_name} must\\b',
-            f'\\b{key_lower}:\\b',
-            f'\\b{member_name}:\\b',
-        ]
-        
-        for pattern in patterns_to_remove:
+        for pattern in [f'\\bfor {key}\\b', f'\\bfor {member["name"]}\\b', f'\\b{key}:\\b', f'\\b{member["name"]}:\\b']:
             clean_name = re.sub(pattern, '', clean_name, flags=re.IGNORECASE)
     
-    # Remove due date phrases - be careful with word boundaries
-    clean_name = re.sub(r'\b(due tomorrow|by tomorrow|tomorrow)\b', '', clean_name, flags=re.IGNORECASE)
-    clean_name = re.sub(r'\b(due today|by today|today)\b', '', clean_name, flags=re.IGNORECASE)
-    clean_name = re.sub(r'\b(due friday|by friday|friday)\b', '', clean_name, flags=re.IGNORECASE)
-    clean_name = re.sub(r'\b(due monday|by monday|monday)\b', '', clean_name, flags=re.IGNORECASE)
-    
-    # Clean up punctuation and extra spaces
-    clean_name = re.sub(r':\s*', '', clean_name)
     clean_name = re.sub(r'\s+', ' ', clean_name).strip()
     
-    # Set the cleaned task name
     if clean_name:
         task_info['name'] = clean_name
     
@@ -1194,8 +1241,7 @@ def parse_command(message, default_assignee=''):
         task_info['display_name'] = task_info['name']
     
     # Build description
-    desc_parts = []
-    desc_parts.append(f"📱 Created via Construction Assistant")
+    desc_parts = ['📱 Created via Construction Assistant']
     
     if task_info['assignee']:
         desc_parts.append(f"👤 Assigned to: {task_info['assignee']}")
@@ -1203,22 +1249,84 @@ def parse_command(message, default_assignee=''):
     if task_info['due_date']:
         desc_parts.append(f"📅 Due: {task_info['due_date']}")
     
-    if task_info['priority'] == 1:
-        desc_parts.append("🚨 URGENT PRIORITY")
-    elif task_info['priority'] == 2:
-        desc_parts.append("⚡ HIGH PRIORITY")
-    
-    if task_info['tags']:
-        desc_parts.append(f"🏷️ Tags: {', '.join(task_info['tags'])}")
-    
     desc_parts.append(f"\n⏰ Created: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
     
     task_info['description'] = '\n'.join(desc_parts)
     
-    # Debug output
-    print(f"Parsed: Assignee='{task_info['assignee']}', Task='{task_info['name']}', Display='{task_info['display_name']}'")
-    
     return task_info
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    """Enhanced chat endpoint that can create projects and tasks"""
+    try:
+        data = request.json
+        message = data.get('message', '').strip()
+        default_assignee = data.get('default_assignee', '')
+        project_list_id = data.get('project_list_id', '')
+        
+        if not message:
+            return jsonify({'response': 'Please provide a message', 'success': False})
+        
+        # Parse the command
+        result = parse_command(message, default_assignee, project_list_id)
+        
+        # Check if it's a project creation
+        if result.get('type') == 'create_project':
+            if not CLICKUP_KEY or not WORKSPACE_ID:
+                return jsonify({
+                    'response': '⚠️ Configure ClickUp API in environment variables to create projects',
+                    'success': False
+                })
+            
+            project_result = create_project_in_clickup(
+                result['project_name'],
+                result.get('trades', [])
+            )
+            
+            if project_result['success']:
+                response = f"✅ <strong>Project Created: {project_result['name']}</strong><br><br>"
+                
+                if project_result['trades']:
+                    response += f"📋 Added starter tasks for:<br>"
+                    for trade in project_result['trades']:
+                        response += f"• {trade}<br>"
+                    response += "<br>"
+                
+                response += f"💡 To add tasks to this project, use: <strong>{project_result['simple_name']}:</strong> before your task<br>"
+                response += f"Example: '{project_result['simple_name']}: Mike needs to fix leak'"
+                
+                return jsonify({
+                    'response': response,
+                    'success': True,
+                    'project_created': True
+                })
+            else:
+                return jsonify({
+                    'response': f"⚠️ Could not create project: {project_result.get('error', 'Unknown error')}",
+                    'success': False
+                })
+        
+        elif result.get('type') == 'error':
+            return jsonify({'response': f"⚠️ {result['message']}", 'success': False})
+        
+        # Handle as regular task
+        task_info = result
+        
+        if CLICKUP_KEY and WORKSPACE_ID:
+            create_result = create_task_in_clickup(task_info)
+            return jsonify(create_result)
+        else:
+            return jsonify({
+                'response': f"📝 Task noted locally: '{task_info['display_name']}'<br>⚠️ Configure ClickUp API to sync",
+                'success': False
+            })
+        
+    except Exception as e:
+        print(f"Error in chat endpoint: {e}")
+        return jsonify({
+            'response': '⚠️ An error occurred. Please try again.',
+            'success': False
+        })
 
 def create_task_in_clickup(task_info):
     """Create a task in ClickUp with assignee in the task name"""
@@ -1229,34 +1337,35 @@ def create_task_in_clickup(task_info):
             'Content-Type': 'application/json'
         }
         
-        # Get the first available list
-        list_id = get_list_id()
+        # Use specified list or get the first available
+        list_id = task_info.get('list_id')
+        if not list_id:
+            list_id = get_list_id()
+        
         if not list_id:
             return {
-                'response': '⚠️ Could not find a ClickUp list. Please create a list in ClickUp first.',
+                'response': '⚠️ Could not find a ClickUp list. Please create a project first.',
                 'success': False
             }
         
-        # Build task data with assignee in the name
+        # Build task data
         task_data = {
-            'name': task_info['display_name'],  # This includes [Assignee] prefix
+            'name': task_info['display_name'],
             'description': task_info['description'],
             'priority': task_info['priority'],
             'status': 'to do'
         }
         
-        # Add tags if any
         if task_info['tags']:
             task_data['tags'] = task_info['tags']
         
-        # Add due date (set to noon to avoid timezone issues)
         if task_info['due_date']:
             due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
             due_date = due_date.replace(hour=12, minute=0, second=0, microsecond=0)
             task_data['due_date'] = int(due_date.timestamp() * 1000)
             task_data['due_date_time'] = True
         
-        # Make the API call to create the task
+        # Make the API call
         response = requests.post(
             f'{BASE_URL}/list/{list_id}/task',
             headers=headers,
@@ -1275,23 +1384,16 @@ def create_task_in_clickup(task_info):
             
             if task_info['assignee']:
                 response_parts.append(f"👤 Assigned to: {task_info['assignee']}")
-            else:
-                response_parts.append(f"👤 No assignee (unassigned task)")
             
             if task_info['priority'] == 1:
                 response_parts.append("🚨 Priority: URGENT")
             elif task_info['priority'] == 2:
                 response_parts.append("⚡ Priority: HIGH")
-            else:
-                response_parts.append("📊 Priority: Normal")
             
             if task_info['due_date']:
                 due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
                 formatted_date = due_date.strftime('%B %d, %Y')
                 response_parts.append(f"📅 Due: {formatted_date}")
-            
-            if task_info['tags']:
-                response_parts.append(f"🏷️ Tags: {', '.join(task_info['tags'])}")
             
             return {
                 'response': '<br>'.join(response_parts),
@@ -1301,15 +1403,10 @@ def create_task_in_clickup(task_info):
         else:
             print(f"ClickUp API error: {response.status_code} - {response.text}")
             return {
-                'response': f"⚠️ Could not create task in ClickUp. Error code: {response.status_code}",
+                'response': f"⚠️ Could not create task. Error code: {response.status_code}",
                 'success': False
             }
             
-    except requests.exceptions.Timeout:
-        return {
-            'response': '⏱️ ClickUp took too long to respond. Please try again.',
-            'success': False
-        }
     except Exception as e:
         print(f"Error creating task: {e}")
         return {
@@ -1323,7 +1420,12 @@ def get_list_id():
     try:
         headers = {'Authorization': CLICKUP_KEY}
         
-        # Get all spaces
+        # Check saved projects first
+        if SETTINGS.get('projects'):
+            first_project = list(SETTINGS['projects'].values())[0]
+            return first_project['list_id']
+        
+        # Otherwise get from ClickUp
         response = requests.get(
             f'{BASE_URL}/team/{WORKSPACE_ID}/space',
             headers=headers,
@@ -1334,9 +1436,7 @@ def get_list_id():
         if response.status_code == 200:
             spaces = response.json().get('spaces', [])
             
-            # Try to find a list in the first available space
             for space in spaces:
-                # Get lists in this space
                 list_response = requests.get(
                     f'{BASE_URL}/space/{space["id"]}/list',
                     headers=headers,
@@ -1347,15 +1447,77 @@ def get_list_id():
                 if list_response.status_code == 200:
                     lists = list_response.json().get('lists', [])
                     if lists:
-                        print(f"Using list: {lists[0]['name']} (ID: {lists[0]['id']})")
                         return lists[0]['id']
         
-        print("No lists found in workspace")
         return None
         
     except Exception as e:
         print(f"Error getting list: {e}")
         return None
+
+@app.route('/sms', methods=['POST'])
+def handle_sms():
+    """SMS handler with project creation support"""
+    
+    from_number = request.form.get('From', '')
+    message_body = request.form.get('Body', '').strip()
+    
+    print(f"SMS from {from_number}: {message_body}")
+    
+    resp = MessagingResponse()
+    lower = message_body.lower()
+    
+    # Parse the command
+    result = parse_command(message_body)
+    
+    if result.get('type') == 'create_project':
+        if CLICKUP_KEY and WORKSPACE_ID:
+            project_result = create_project_in_clickup(
+                result['project_name'],
+                result.get('trades', [])
+            )
+            
+            if project_result['success']:
+                msg = f"✅ Created: {project_result['name']}"
+                if project_result['trades']:
+                    msg += f" with {len(project_result['trades'])} trades"
+                msg += f"\nUse '{project_result['simple_name']}:' for tasks"
+            else:
+                msg = "⚠️ Could not create project"
+        else:
+            msg = "⚠️ ClickUp not configured"
+    
+    elif "status" in lower:
+        msg = "📊 Projects:\n"
+        if SETTINGS.get('projects'):
+            for key, project in SETTINGS['projects'].items():
+                msg += f"• {project['name']}\n"
+        else:
+            msg += "No projects yet"
+    
+    elif "help" in lower:
+        msg = "Commands:\n"
+        msg += "create project [name]\n"
+        msg += "status - list projects\n"
+        msg += "add [task]\n"
+        msg += "[project]: [task]"
+    
+    elif result.get('type') == 'create_task':
+        # Create the task
+        if CLICKUP_KEY and WORKSPACE_ID:
+            create_result = create_task_in_clickup(result)
+            if create_result['success']:
+                msg = f"✅ Created: {result['display_name']}"
+            else:
+                msg = "⚠️ Couldn't create task"
+        else:
+            msg = f"📝 Noted: {result['display_name']}"
+    
+    else:
+        msg = "Text 'help' for commands"
+    
+    resp.message(msg)
+    return str(resp)
 
 @app.route('/api/health', methods=['GET'])
 def health():
@@ -1369,7 +1531,8 @@ def health():
         'twilio_configured': bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER),
         'settings_loaded': bool(SETTINGS),
         'team_count': len(SETTINGS.get('team_members', {})),
-        'job_types_count': len(SETTINGS.get('job_types', {}))
+        'job_types_count': len(SETTINGS.get('job_types', {})),
+        'projects_count': len(SETTINGS.get('projects', {}))
     }
     
     return jsonify(health_status)
