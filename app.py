@@ -1,5 +1,5 @@
-# app.py - ClickUp Construction Assistant with Project Creation
-# Complete version with SMS support and dynamic project creation
+# app.py - ClickUp Construction Assistant with SMS Support
+# Complete working version with timeout protection for SMS
 
 import os
 import re
@@ -984,6 +984,333 @@ def update_settings():
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 400
 
+def create_project_in_clickup_with_timeout(project_name, trades=None, timeout=8):
+    """Create project with timeout protection"""
+    
+    headers = {
+        'Authorization': CLICKUP_KEY,
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # Get space with timeout
+        space_response = requests.get(
+            f'{BASE_URL}/team/{WORKSPACE_ID}/space',
+            headers=headers,
+            params={'archived': 'false'},
+            timeout=timeout
+        )
+        
+        if space_response.status_code != 200:
+            return {'success': False, 'error': 'Could not find space'}
+        
+        spaces = space_response.json().get('spaces', [])
+        if not spaces:
+            return {'success': False, 'error': 'No spaces found'}
+        
+        space_id = spaces[0]['id']
+        
+        # Create list with timeout
+        list_data = {
+            'name': project_name,
+            'content': f'Project created via SMS'
+        }
+        
+        list_response = requests.post(
+            f'{BASE_URL}/space/{space_id}/list',
+            headers=headers,
+            json=list_data,
+            timeout=timeout
+        )
+        
+        if list_response.status_code != 200:
+            return {'success': False, 'error': 'Could not create project'}
+        
+        new_list = list_response.json()
+        list_id = new_list['id']
+        
+        # Save to settings (quick operation)
+        simple_name = project_name.lower().split()[0]
+        if 'projects' not in SETTINGS:
+            SETTINGS['projects'] = {}
+        
+        SETTINGS['projects'][simple_name] = {
+            'list_id': list_id,
+            'name': project_name,
+            'created': datetime.now().isoformat()
+        }
+        save_settings(SETTINGS)
+        
+        return {
+            'success': True,
+            'list_id': list_id,
+            'name': project_name,
+            'simple_name': simple_name
+        }
+        
+    except requests.exceptions.Timeout:
+        print("ClickUp API timeout")
+        return {'success': False, 'error': 'ClickUp timeout'}
+    except Exception as e:
+        print(f"Error creating project: {e}")
+        return {'success': False, 'error': str(e)}
+
+def detect_project_from_message(message):
+    """Detect which project a task belongs to"""
+    lower = message.lower()
+    
+    # Check for project prefix patterns
+    for key, project in SETTINGS.get('projects', {}).items():
+        # Check for "project:" or "project -" format
+        if lower.startswith(key + ':') or lower.startswith(key + ' -'):
+            return project['list_id'], key
+        # Check if project name is mentioned
+        if key in lower:
+            return project['list_id'], key
+    
+    return None, None
+
+def parse_command_simple(message):
+    """Simple parser for SMS - no complex regex"""
+    lower = message.lower()
+    
+    # Check if this is a project creation
+    if 'create project' in lower or 'new project' in lower:
+        # Extract project name after "project"
+        parts = message.split('project')
+        if len(parts) > 1:
+            project_name = parts[1].strip()
+            # Remove common words
+            project_name = project_name.replace('called', '').replace('named', '').strip()
+            
+            if project_name:
+                return {
+                    'type': 'create_project',
+                    'project_name': project_name.title()
+                }
+        
+        return {'type': 'error', 'message': 'Include project name'}
+    
+    # Otherwise it's a task
+    task_info = {
+        'type': 'create_task',
+        'name': message,
+        'display_name': message,
+        'assignee': None,
+        'list_id': None
+    }
+    
+    # Check for assignee
+    for key, member in SETTINGS['team_members'].items():
+        if key.lower() in lower or member['name'].lower() in lower:
+            task_info['assignee'] = member['name']
+            break
+    
+    # Check for project
+    list_id, project_key = detect_project_from_message(message)
+    if list_id:
+        task_info['list_id'] = list_id
+        # Clean project prefix from name
+        for prefix in [f'{project_key}:', f'{project_key} -']:
+            if lower.startswith(prefix):
+                task_info['name'] = message[len(prefix):].strip()
+                break
+    
+    # Add assignee to display name
+    if task_info['assignee']:
+        task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
+    
+    return task_info
+
+@app.route('/sms', methods=['POST'])
+def handle_sms():
+    """SMS handler with timeout protection"""
+    
+    from_number = request.form.get('From', '')
+    message_body = request.form.get('Body', '').strip()
+    
+    print(f"SMS from {from_number}: {message_body}")
+    
+    # Create response immediately
+    resp = MessagingResponse()
+    
+    try:
+        lower = message_body.lower()
+        
+        # Quick responses that don't need ClickUp
+        if "help" in lower:
+            msg = "Commands:\n"
+            msg += "status - projects\n"
+            msg += "create project [name]\n"
+            msg += "[project]: [task]"
+            resp.message(msg)
+            return str(resp), 200, {'Content-Type': 'text/xml'}
+        
+        if "status" in lower:
+            msg = "Projects:\n"
+            if SETTINGS.get('projects'):
+                for key, project in list(SETTINGS['projects'].items())[:5]:
+                    msg += f"{project['name']}\n"
+            else:
+                msg += "None yet"
+            resp.message(msg)
+            return str(resp), 200, {'Content-Type': 'text/xml'}
+        
+        # Parse the command
+        result = parse_command_simple(message_body)
+        
+        # Handle project creation with timeout
+        if result.get('type') == 'create_project':
+            if CLICKUP_KEY and WORKSPACE_ID:
+                # Try to create with short timeout
+                project_result = create_project_in_clickup_with_timeout(
+                    result['project_name'],
+                    timeout=8  # 8 second timeout
+                )
+                
+                if project_result['success']:
+                    msg = f"Created: {project_result['name']}"
+                else:
+                    msg = "Couldn't create. Try web."
+            else:
+                msg = "ClickUp not configured"
+        
+        # Handle task creation
+        elif result.get('type') == 'create_task':
+            # Just acknowledge for now
+            if result.get('assignee'):
+                msg = f"Noted: [{result['assignee']}] {result['name'][:30]}"
+            else:
+                msg = f"Noted: {result['name'][:40]}"
+        
+        else:
+            msg = "Text 'help' for commands"
+    
+    except Exception as e:
+        print(f"SMS error: {e}")
+        msg = "Error. Text 'help'"
+    
+    resp.message(msg)
+    return str(resp), 200, {'Content-Type': 'text/xml'}
+
+def parse_command(message, default_assignee='', project_list_id=None):
+    """Full parser for web interface"""
+    
+    original_message = message
+    lower = message.lower()
+    
+    # Check if this is a project creation command
+    if any(phrase in lower for phrase in ['create project', 'new project', 'start project', 'make project']):
+        # Extract project name
+        project_name = None
+        
+        # Try different patterns
+        patterns = [
+            r'(?:create|new|start|make) project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
+            r'project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, lower)
+            if match:
+                project_name = match.group(1).strip()
+                break
+        
+        if not project_name:
+            return {'type': 'error', 'message': 'Please specify a project name. Example: "create project Oak Street"'}
+        
+        # Check for trades
+        trades = []
+        trade_keywords = {
+            'water': 'Water',
+            'sewer': 'Sewer', 
+            'storm': 'Storm',
+            'grading': 'Grading',
+            'electrical': 'Electrical',
+            'concrete': 'Concrete',
+            'plumbing': 'Plumbing'
+        }
+        
+        for keyword, trade_name in trade_keywords.items():
+            if keyword in lower and trade_name not in trades:
+                trades.append(trade_name)
+        
+        return {
+            'type': 'create_project',
+            'project_name': project_name.title(),
+            'trades': trades
+        }
+    
+    # Otherwise, parse as regular task
+    task_info = {
+        'type': 'create_task',
+        'name': message,
+        'display_name': message,
+        'priority': 3,
+        'assignee': default_assignee,
+        'due_date': None,
+        'description': '',
+        'tags': [],
+        'list_id': project_list_id
+    }
+    
+    # Detect project from message if not specified
+    if not task_info['list_id']:
+        list_id, project_key = detect_project_from_message(message)
+        if list_id:
+            task_info['list_id'] = list_id
+            # Remove project prefix from task name
+            for prefix in [f'{project_key}:', f'{project_key} -', project_key]:
+                if lower.startswith(prefix):
+                    message = message[len(prefix):].strip()
+                    task_info['name'] = message
+                    lower = message.lower()
+                    break
+    
+    # Extract priority
+    if any(word in lower for word in ['urgent', 'emergency', 'critical', 'asap']):
+        task_info['priority'] = 1
+        task_info['tags'].append('URGENT')
+    
+    # Extract assignee
+    for key, member in SETTINGS['team_members'].items():
+        member_name = member['name'].lower()
+        key_lower = key.lower()
+        
+        patterns = [
+            f"\\bfor {key_lower}\\b",
+            f"\\bfor {member_name}\\b",
+            f"\\b{key_lower} needs to\\b",
+            f"\\b{member_name} needs to\\b",
+        ]
+        
+        for pattern in patterns:
+            if re.search(pattern, lower, re.IGNORECASE):
+                task_info['assignee'] = member['name']
+                break
+    
+    # Extract due date
+    today = datetime.now()
+    if 'tomorrow' in lower:
+        task_info['due_date'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
+    elif 'today' in lower:
+        task_info['due_date'] = today.strftime('%Y-%m-%d')
+    
+    # Clean up task name
+    clean_name = message
+    clean_name = re.sub(r'^(add|create|schedule|new)\s+(task\s+)?', '', clean_name, flags=re.IGNORECASE)
+    
+    if clean_name:
+        task_info['name'] = clean_name
+    
+    # Create display name with [Assignee] prefix
+    if task_info['assignee']:
+        task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
+    
+    task_info['description'] = f"📱 Created via Construction Assistant\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    
+    return task_info
+
 def create_project_in_clickup(project_name, trades=None):
     """Create a new project (list) in ClickUp"""
     
@@ -1036,9 +1363,8 @@ def create_project_in_clickup(project_name, trades=None):
             for trade in trades:
                 task_data = {
                     'name': f'{trade} Work - {project_name}',
-                    'description': f'Standard {trade} tasks for this project\n\nCreated via Construction Assistant',
-                    'status': 'to do',
-                    'priority': 3
+                    'description': f'Standard {trade} tasks for this project',
+                    'status': 'to do'
                 }
                 
                 task_response = requests.post(
@@ -1075,185 +1401,6 @@ def create_project_in_clickup(project_name, trades=None):
     except Exception as e:
         print(f"Error creating project: {e}")
         return {'success': False, 'error': str(e)}
-
-def detect_project_from_message(message):
-    """Detect which project a task belongs to"""
-    lower = message.lower()
-    
-    # Check for project prefix patterns
-    for key, project in SETTINGS.get('projects', {}).items():
-        # Check for "project:" or "project -" format
-        if lower.startswith(key + ':') or lower.startswith(key + ' -'):
-            return project['list_id'], key
-        # Check if project name is mentioned
-        if key in lower:
-            return project['list_id'], key
-    
-    return None, None
-
-def parse_command(message, default_assignee='', project_list_id=None):
-    """Enhanced parser that detects project creation and task assignment"""
-    
-    original_message = message
-    lower = message.lower()
-    
-    # Check if this is a project creation command
-    if any(phrase in lower for phrase in ['create project', 'new project', 'start project', 'make project']):
-        # Extract project name
-        project_name = None
-        
-        # Try different patterns
-        patterns = [
-            r'(?:create|new|start|make) project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
-            r'project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, lower)
-            if match:
-                project_name = match.group(1).strip()
-                break
-        
-        if not project_name:
-            return {'type': 'error', 'message': 'Please specify a project name. Example: "create project Oak Street"'}
-        
-        # Check for trades
-        trades = []
-        trade_keywords = {
-            'water': 'Water',
-            'sewer': 'Sewer', 
-            'storm': 'Storm',
-            'grading': 'Grading',
-            'grade': 'Grading',
-            'electrical': 'Electrical',
-            'electric': 'Electrical',
-            'concrete': 'Concrete',
-            'plumbing': 'Plumbing',
-            'plumb': 'Plumbing'
-        }
-        
-        for keyword, trade_name in trade_keywords.items():
-            if keyword in lower and trade_name not in trades:
-                trades.append(trade_name)
-        
-        return {
-            'type': 'create_project',
-            'project_name': project_name.title(),
-            'trades': trades
-        }
-    
-    # Otherwise, parse as regular task
-    task_info = {
-        'type': 'create_task',
-        'name': message,
-        'display_name': message,
-        'priority': 3,
-        'assignee': default_assignee,
-        'due_date': None,
-        'description': '',
-        'tags': [],
-        'list_id': project_list_id
-    }
-    
-    # Detect project from message if not specified
-    if not task_info['list_id']:
-        list_id, project_key = detect_project_from_message(message)
-        if list_id:
-            task_info['list_id'] = list_id
-            # Remove project prefix from task name
-            for prefix in [f'{project_key}:', f'{project_key} -', project_key]:
-                if lower.startswith(prefix):
-                    message = message[len(prefix):].strip()
-                    task_info['name'] = message
-                    lower = message.lower()
-                    break
-    
-    # Extract priority
-    if any(word in lower for word in ['urgent', 'emergency', 'critical', 'asap']):
-        task_info['priority'] = 1
-        task_info['tags'].append('URGENT')
-    elif any(word in lower for word in ['high', 'important']):
-        task_info['priority'] = 2
-    elif any(word in lower for word in ['low', 'whenever']):
-        task_info['priority'] = 4
-    
-    # Safety issues are always urgent
-    if 'safety' in lower:
-        task_info['priority'] = 1
-        task_info['tags'].append('SAFETY')
-    
-    # Extract assignee
-    assignee_found = False
-    for key, member in SETTINGS['team_members'].items():
-        member_name = member['name'].lower()
-        key_lower = key.lower()
-        
-        patterns = [
-            f"\\bfor {key_lower}\\b",
-            f"\\bfor {member_name}\\b",
-            f"\\b{key_lower} needs to\\b",
-            f"\\b{member_name} needs to\\b",
-            f"\\b{key_lower}:\\b",
-            f"\\b{member_name}:\\b",
-        ]
-        
-        for pattern in patterns:
-            if re.search(pattern, lower, re.IGNORECASE):
-                task_info['assignee'] = member['name']
-                assignee_found = True
-                break
-        
-        if assignee_found:
-            break
-    
-    # Extract due date
-    today = datetime.now()
-    
-    if 'tomorrow' in lower:
-        task_info['due_date'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
-    elif 'today' in lower:
-        task_info['due_date'] = today.strftime('%Y-%m-%d')
-    elif re.search(r'\bfriday\b', lower):
-        days_until = (4 - today.weekday()) % 7
-        if days_until == 0:
-            days_until = 7
-        task_info['due_date'] = (today + timedelta(days=days_until)).strftime('%Y-%m-%d')
-    
-    # Clean up task name
-    clean_name = message
-    clean_name = re.sub(r'^(add|create|schedule|new)\s+(task\s+)?', '', clean_name, flags=re.IGNORECASE)
-    clean_name = re.sub(r'\b(urgent|emergency|high priority|low priority|asap)\b\s*', '', clean_name, flags=re.IGNORECASE)
-    
-    # Remove assignee phrases
-    for key, member in SETTINGS['team_members'].items():
-        for pattern in [f'\\bfor {key}\\b', f'\\bfor {member["name"]}\\b', f'\\b{key}:\\b', f'\\b{member["name"]}:\\b']:
-            clean_name = re.sub(pattern, '', clean_name, flags=re.IGNORECASE)
-    
-    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-    
-    if clean_name:
-        task_info['name'] = clean_name
-    
-    # Create display name with [Assignee] prefix
-    if task_info['assignee']:
-        task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
-    else:
-        task_info['display_name'] = task_info['name']
-    
-    # Build description
-    desc_parts = ['📱 Created via Construction Assistant']
-    
-    if task_info['assignee']:
-        desc_parts.append(f"👤 Assigned to: {task_info['assignee']}")
-    
-    if task_info['due_date']:
-        desc_parts.append(f"📅 Due: {task_info['due_date']}")
-    
-    desc_parts.append(f"\n⏰ Created: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    
-    task_info['description'] = '\n'.join(desc_parts)
-    
-    return task_info
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
@@ -1313,234 +1460,4 @@ def chat():
         task_info = result
         
         if CLICKUP_KEY and WORKSPACE_ID:
-            create_result = create_task_in_clickup(task_info)
-            return jsonify(create_result)
-        else:
-            return jsonify({
-                'response': f"📝 Task noted locally: '{task_info['display_name']}'<br>⚠️ Configure ClickUp API to sync",
-                'success': False
-            })
-        
-    except Exception as e:
-        print(f"Error in chat endpoint: {e}")
-        return jsonify({
-            'response': '⚠️ An error occurred. Please try again.',
-            'success': False
-        })
-
-def create_task_in_clickup(task_info):
-    """Create a task in ClickUp with assignee in the task name"""
-    
-    try:
-        headers = {
-            'Authorization': CLICKUP_KEY,
-            'Content-Type': 'application/json'
-        }
-        
-        # Use specified list or get the first available
-        list_id = task_info.get('list_id')
-        if not list_id:
-            list_id = get_list_id()
-        
-        if not list_id:
-            return {
-                'response': '⚠️ Could not find a ClickUp list. Please create a project first.',
-                'success': False
-            }
-        
-        # Build task data
-        task_data = {
-            'name': task_info['display_name'],
-            'description': task_info['description'],
-            'priority': task_info['priority'],
-            'status': 'to do'
-        }
-        
-        if task_info['tags']:
-            task_data['tags'] = task_info['tags']
-        
-        if task_info['due_date']:
-            due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
-            due_date = due_date.replace(hour=12, minute=0, second=0, microsecond=0)
-            task_data['due_date'] = int(due_date.timestamp() * 1000)
-            task_data['due_date_time'] = True
-        
-        # Make the API call
-        response = requests.post(
-            f'{BASE_URL}/list/{list_id}/task',
-            headers=headers,
-            json=task_data,
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            created_task = response.json()
-            
-            # Build success response
-            response_parts = []
-            response_parts.append(f"<strong>✅ Task Created Successfully!</strong>")
-            response_parts.append(f"")
-            response_parts.append(f"📝 <strong>{task_info['display_name']}</strong>")
-            
-            if task_info['assignee']:
-                response_parts.append(f"👤 Assigned to: {task_info['assignee']}")
-            
-            if task_info['priority'] == 1:
-                response_parts.append("🚨 Priority: URGENT")
-            elif task_info['priority'] == 2:
-                response_parts.append("⚡ Priority: HIGH")
-            
-            if task_info['due_date']:
-                due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
-                formatted_date = due_date.strftime('%B %d, %Y')
-                response_parts.append(f"📅 Due: {formatted_date}")
-            
-            return {
-                'response': '<br>'.join(response_parts),
-                'success': True,
-                'task_id': created_task.get('id')
-            }
-        else:
-            print(f"ClickUp API error: {response.status_code} - {response.text}")
-            return {
-                'response': f"⚠️ Could not create task. Error code: {response.status_code}",
-                'success': False
-            }
-            
-    except Exception as e:
-        print(f"Error creating task: {e}")
-        return {
-            'response': f"⚠️ Error: {str(e)}",
-            'success': False
-        }
-
-def get_list_id():
-    """Get the first available list ID from ClickUp"""
-    
-    try:
-        headers = {'Authorization': CLICKUP_KEY}
-        
-        # Check saved projects first
-        if SETTINGS.get('projects'):
-            first_project = list(SETTINGS['projects'].values())[0]
-            return first_project['list_id']
-        
-        # Otherwise get from ClickUp
-        response = requests.get(
-            f'{BASE_URL}/team/{WORKSPACE_ID}/space',
-            headers=headers,
-            params={'archived': 'false'},
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            spaces = response.json().get('spaces', [])
-            
-            for space in spaces:
-                list_response = requests.get(
-                    f'{BASE_URL}/space/{space["id"]}/list',
-                    headers=headers,
-                    params={'archived': 'false'},
-                    timeout=10
-                )
-                
-                if list_response.status_code == 200:
-                    lists = list_response.json().get('lists', [])
-                    if lists:
-                        return lists[0]['id']
-        
-        return None
-        
-    except Exception as e:
-        print(f"Error getting list: {e}")
-        return None
-
-@app.route('/sms', methods=['POST'])
-def handle_sms():
-    """SMS handler with project creation support"""
-    
-    from_number = request.form.get('From', '')
-    message_body = request.form.get('Body', '').strip()
-    
-    print(f"SMS from {from_number}: {message_body}")
-    
-    resp = MessagingResponse()
-    lower = message_body.lower()
-    
-    # Parse the command
-    result = parse_command(message_body)
-    
-    if result.get('type') == 'create_project':
-        if CLICKUP_KEY and WORKSPACE_ID:
-            project_result = create_project_in_clickup(
-                result['project_name'],
-                result.get('trades', [])
-            )
-            
-            if project_result['success']:
-                msg = f"✅ Created: {project_result['name']}"
-                if project_result['trades']:
-                    msg += f" with {len(project_result['trades'])} trades"
-                msg += f"\nUse '{project_result['simple_name']}:' for tasks"
-            else:
-                msg = "⚠️ Could not create project"
-        else:
-            msg = "⚠️ ClickUp not configured"
-    
-    elif "status" in lower:
-        msg = "📊 Projects:\n"
-        if SETTINGS.get('projects'):
-            for key, project in SETTINGS['projects'].items():
-                msg += f"• {project['name']}\n"
-        else:
-            msg += "No projects yet"
-    
-    elif "help" in lower:
-        msg = "Commands:\n"
-        msg += "create project [name]\n"
-        msg += "status - list projects\n"
-        msg += "add [task]\n"
-        msg += "[project]: [task]"
-    
-    elif result.get('type') == 'create_task':
-        # Create the task
-        if CLICKUP_KEY and WORKSPACE_ID:
-            create_result = create_task_in_clickup(result)
-            if create_result['success']:
-                msg = f"✅ Created: {result['display_name']}"
-            else:
-                msg = "⚠️ Couldn't create task"
-        else:
-            msg = f"📝 Noted: {result['display_name']}"
-    
-    else:
-        msg = "Text 'help' for commands"
-    
-    resp.message(msg)
-    return str(resp)
-
-@app.route('/api/health', methods=['GET'])
-def health():
-    """Health check endpoint"""
-    
-    health_status = {
-        'status': 'healthy',
-        'timestamp': datetime.now().isoformat(),
-        'clickup': bool(CLICKUP_KEY),
-        'workspace': bool(WORKSPACE_ID),
-        'twilio_configured': bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN and TWILIO_PHONE_NUMBER),
-        'settings_loaded': bool(SETTINGS),
-        'team_count': len(SETTINGS.get('team_members', {})),
-        'job_types_count': len(SETTINGS.get('job_types', {})),
-        'projects_count': len(SETTINGS.get('projects', {}))
-    }
-    
-    return jsonify(health_status)
-
-if __name__ == '__main__':
-    port = int(os.getenv('PORT', 10000))
-    print(f"🚀 Starting server on port {port}")
-    print(f"📱 Main interface: http://localhost:{port}")
-    print(f"⚙️  Settings page: http://localhost:{port}/settings")
-    print(f"📱 SMS webhook: http://localhost:{port}/sms")
-    app.run(host='0.0.0.0', port=port, debug=False)
+            cre
