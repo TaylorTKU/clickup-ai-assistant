@@ -558,7 +558,7 @@ HTML_PAGE = """
 </html>
 """
 
-# Settings page HTML (keeping existing)
+# Settings page HTML
 SETTINGS_PAGE = """
 <!DOCTYPE html>
 <html>
@@ -1402,6 +1402,66 @@ def create_project_in_clickup(project_name, trades=None):
         print(f"Error creating project: {e}")
         return {'success': False, 'error': str(e)}
 
+def create_clickup_task(task_info):
+    """Create a task in ClickUp"""
+    
+    headers = {
+        'Authorization': CLICKUP_KEY,
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        # Get list ID if not specified
+        list_id = task_info.get('list_id')
+        
+        if not list_id:
+            # Get the first available list
+            list_response = requests.get(
+                f'{BASE_URL}/team/{WORKSPACE_ID}/list',
+                headers=headers,
+                timeout=10
+            )
+            
+            if list_response.status_code != 200:
+                return {'success': False, 'error': 'Could not find lists'}
+            
+            lists = list_response.json().get('lists', [])
+            if not lists:
+                return {'success': False, 'error': 'No lists found. Create a project first.'}
+            
+            list_id = lists[0]['id']
+        
+        # Create task data
+        task_data = {
+            'name': task_info['display_name'],
+            'description': task_info.get('description', ''),
+            'priority': task_info.get('priority', 3),
+            'status': 'to do'
+        }
+        
+        if task_info.get('due_date'):
+            # Convert to milliseconds timestamp
+            due_date = datetime.strptime(task_info['due_date'], '%Y-%m-%d')
+            task_data['due_date'] = int(due_date.timestamp() * 1000)
+        
+        # Create the task
+        task_response = requests.post(
+            f'{BASE_URL}/list/{list_id}/task',
+            headers=headers,
+            json=task_data,
+            timeout=10
+        )
+        
+        if task_response.status_code == 200:
+            return {'success': True, 'task': task_response.json()}
+        else:
+            print(f"Error creating task: {task_response.text}")
+            return {'success': False, 'error': 'Could not create task'}
+            
+    except Exception as e:
+        print(f"Error creating ClickUp task: {e}")
+        return {'success': False, 'error': str(e)}
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
     """Enhanced chat endpoint that can create projects and tasks"""
@@ -1460,4 +1520,59 @@ def chat():
         task_info = result
         
         if CLICKUP_KEY and WORKSPACE_ID:
-            cre
+            created_task = create_clickup_task(task_info)
+            
+            if created_task['success']:
+                response = f"✅ <strong>Task Created: {task_info['display_name']}</strong><br>"
+                
+                if task_info.get('assignee'):
+                    response += f"👤 Assigned to: {task_info['assignee']}<br>"
+                
+                if task_info.get('due_date'):
+                    response += f"📅 Due: {task_info['due_date']}<br>"
+                
+                if task_info.get('list_id'):
+                    # Find project name
+                    project_name = None
+                    for key, project in SETTINGS.get('projects', {}).items():
+                        if project.get('list_id') == task_info['list_id']:
+                            project_name = project['name']
+                            break
+                    if project_name:
+                        response += f"📁 Project: {project_name}<br>"
+                
+                return jsonify({
+                    'response': response,
+                    'success': True
+                })
+            else:
+                return jsonify({
+                    'response': f"⚠️ Could not create task: {created_task.get('error', 'Unknown error')}",
+                    'success': False
+                })
+        else:
+            return jsonify({
+                'response': '⚠️ Configure ClickUp API in environment variables',
+                'success': False
+            })
+            
+    except Exception as e:
+        print(f"Error in chat endpoint: {e}")
+        return jsonify({
+            'response': f"⚠️ Error processing request: {str(e)}",
+            'success': False
+        })
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'healthy',
+        'clickup_configured': bool(CLICKUP_KEY and WORKSPACE_ID),
+        'twilio_configured': bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN),
+        'settings_file': os.path.exists(SETTINGS_FILE)
+    })
+
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port, debug=False)
