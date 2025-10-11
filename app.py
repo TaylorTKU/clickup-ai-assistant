@@ -1,5 +1,5 @@
 # app.py - ClickUp Construction Assistant with SMS Support
-# Complete working version with timeout protection for SMS
+# Complete working version with timeout protection and ClickUp sync
 
 import os
 import re
@@ -161,6 +161,9 @@ print("=" * 60)
 
 # Sync ClickUp lists on startup (AFTER configuration is loaded)
 sync_clickup_lists_on_startup()
+
+# Main interface HTML with project creation support
+HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
@@ -832,6 +835,11 @@ SETTINGS_PAGE = """
             background: #e8f4ff;
             border-left: 4px solid #667eea;
         }
+        
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
     </style>
 </head>
 <body>
@@ -1039,26 +1047,6 @@ SETTINGS_PAGE = """
 </body>
 </html>
 """
-
-# Configuration from environment variables
-CLICKUP_KEY = os.getenv('CLICKUP_API_KEY', '')
-WORKSPACE_ID = os.getenv('WORKSPACE_ID', '')
-BASE_URL = 'https://api.clickup.com/api/v2'
-
-# Twilio configuration
-TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
-TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
-TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
-
-# Startup message
-print("=" * 60)
-print("🏗️  ClickUp Construction Assistant")
-print("=" * 60)
-print(f"📌 ClickUp: {'Connected' if CLICKUP_KEY else 'Not configured'}")
-print(f"🏢 Workspace: {WORKSPACE_ID if WORKSPACE_ID else 'Not configured'}")
-print(f"📱 SMS: {'Enabled' if TWILIO_ACCOUNT_SID else 'Not configured'}")
-print(f"📁 Settings: {SETTINGS_FILE}")
-print("=" * 60)
 
 @app.route('/')
 def home():
