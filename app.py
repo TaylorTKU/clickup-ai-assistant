@@ -1071,17 +1071,27 @@ def detect_project_from_message(message):
     return None, None
 
 def parse_command_simple(message):
-    """Simple parser for SMS - no complex regex"""
+    """Simple parser for SMS - handles various project creation formats"""
     lower = message.lower()
     
-    # Check if this is a project creation
-    if 'create project' in lower or 'new project' in lower:
-        # Extract project name after "project"
-        parts = message.split('project')
+    # Check if this is a project creation - handles many variations
+    project_indicators = ['create project', 'new project', 'create a project', 
+                         'new a project', 'start project', 'start a project',
+                         'make project', 'make a project']
+    
+    is_project_creation = any(indicator in lower for indicator in project_indicators)
+    
+    if is_project_creation:
+        # Extract project name - split by "project" and take everything after
+        parts = re.split(r'\s+project\s+', lower, maxsplit=1)
         if len(parts) > 1:
             project_name = parts[1].strip()
-            # Remove common words
-            project_name = project_name.replace('called', '').replace('named', '').strip()
+            # Remove common connecting words
+            connecting_words = ['called', 'named', 'a', 'the', 'is']
+            for word in connecting_words:
+                # Remove the word if it's at the start
+                if project_name.startswith(word + ' '):
+                    project_name = project_name[len(word):].strip()
             
             if project_name:
                 return {
