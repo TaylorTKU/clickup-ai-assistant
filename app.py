@@ -151,16 +151,11 @@ TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
 TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
 TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
 
-# OpenAI configuration
+# OpenAI configuration - Using v0.28 syntax
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 if OPENAI_API_KEY:
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=OPENAI_API_KEY)
-    except ImportError:
-        # Fallback for older version
-        openai.api_key = OPENAI_API_KEY
-        client = None
+    import openai
+    openai.api_key = OPENAI_API_KEY
 
 # Startup message
 print("=" * 60)
@@ -1267,31 +1262,18 @@ Example input: "Mike found water damage at oak street needs fixing asap"
 Example output: {{"type": "create_task", "name": "Fix water damage", "assignee": "Mike", "project": "oak", "priority": 1}}
 """
 
-        # Try new OpenAI client syntax (v1.0+)
-        if client:
-            response = client.chat.completions.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": message}
-                ],
-                temperature=0.3,
-                max_tokens=200
-            )
-            result = json.loads(response.choices[0].message.content)
-        else:
-            # Fallback to old syntax (v0.28)
-            response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
-                messages=[
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": message}
-                ],
-                temperature=0.3,
-                max_tokens=200
-            )
-            result = json.loads(response.choices[0].message.content)
+        # Use v0.28 syntax
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": message}
+            ],
+            temperature=0.3,
+            max_tokens=200
+        )
         
+        result = json.loads(response.choices[0].message.content)
         print(f"🤖 OpenAI parsed: {result}")
         return result
         
