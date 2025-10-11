@@ -56,6 +56,91 @@ def save_settings(settings):
 # Load initial settings
 SETTINGS = load_settings()
 
+def sync_clickup_lists_on_startup():
+    """Sync ClickUp lists with local settings on startup"""
+    if not CLICKUP_KEY or not WORKSPACE_ID:
+        print("⚠️  ClickUp not configured - skipping sync")
+        return
+    
+    headers = {
+        'Authorization': CLICKUP_KEY,
+        'Content-Type': 'application/json'
+    }
+    
+    try:
+        print("🔄 Syncing with ClickUp lists...")
+        
+        # Get all spaces first
+        space_response = requests.get(
+            f'{BASE_URL}/team/{WORKSPACE_ID}/space',
+            headers=headers,
+            params={'archived': 'false'},
+            timeout=10
+        )
+        
+        if space_response.status_code != 200:
+            print(f"⚠️  Could not fetch spaces: {space_response.status_code}")
+            return
+        
+        spaces = space_response.json().get('spaces', [])
+        
+        # Get lists from each space
+        synced_count = 0
+        for space in spaces:
+            space_id = space['id']
+            space_name = space['name']
+            
+            # Get lists in this space
+            list_response = requests.get(
+                f'{BASE_URL}/space/{space_id}/list',
+                headers=headers,
+                params={'archived': 'false'},
+                timeout=10
+            )
+            
+            if list_response.status_code == 200:
+                lists = list_response.json().get('lists', [])
+                
+                for lst in lists:
+                    # Create simple key from first word of list name
+                    list_name = lst['name']
+                    simple_key = list_name.lower().split()[0] if list_name else 'unnamed'
+                    
+                    # Handle duplicates by adding number
+                    original_key = simple_key
+                    counter = 1
+                    while simple_key in SETTINGS['projects']:
+                        # Check if it's the same list ID (already synced)
+                        if SETTINGS['projects'][simple_key].get('list_id') == lst['id']:
+                            break
+                        simple_key = f"{original_key}{counter}"
+                        counter += 1
+                    
+                    # Add or update project
+                    if simple_key not in SETTINGS['projects'] or SETTINGS['projects'][simple_key].get('list_id') != lst['id']:
+                        SETTINGS['projects'][simple_key] = {
+                            'list_id': lst['id'],
+                            'name': list_name,
+                            'space': space_name,
+                            'created': lst.get('date_created', ''),
+                            'synced': datetime.now().isoformat()
+                        }
+                        synced_count += 1
+                        print(f"  ✅ Synced: {list_name} (use '{simple_key}:' for tasks)")
+        
+        # Save the synced settings
+        save_settings(SETTINGS)
+        
+        print(f"✅ Sync complete! {synced_count} lists added/updated")
+        print(f"📊 Total projects available: {len(SETTINGS['projects'])}")
+        
+    except Exception as e:
+        print(f"⚠️  Error syncing with ClickUp: {e}")
+        print("   Continuing with existing settings...")
+
+# Sync on startup
+sync_clickup_lists_on_startup()
+
 # Main interface HTML with project creation support
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -1282,21 +1367,25 @@ def parse_command(message, default_assignee='', project_list_id=None):
         task_info['priority'] = 1
         task_info['tags'].append('URGENT')
     
-    # Extract assignee
+    # Extract assignee and clean up task name
     for key, member in SETTINGS['team_members'].items():
         member_name = member['name'].lower()
         key_lower = key.lower()
         
         patterns = [
-            f"\\bfor {key_lower}\\b",
-            f"\\bfor {member_name}\\b",
-            f"\\b{key_lower} needs to\\b",
-            f"\\b{member_name} needs to\\b",
+            (f"\\bfor {key_lower}\\b", f"for {key_lower}"),
+            (f"\\bfor {member_name}\\b", f"for {member_name}"),
+            (f"\\b{key_lower} needs to\\b", f"{key_lower} needs to"),
+            (f"\\b{member_name} needs to\\b", f"{member_name} needs to"),
         ]
         
-        for pattern in patterns:
+        for pattern, text_to_remove in patterns:
             if re.search(pattern, lower, re.IGNORECASE):
                 task_info['assignee'] = member['name']
+                # Remove the assignee phrase from the task name
+                message = re.sub(pattern, '', message, flags=re.IGNORECASE).strip()
+                task_info['name'] = message
+                lower = message.lower()
                 break
     
     # Extract due date
