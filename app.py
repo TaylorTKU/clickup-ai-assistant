@@ -1250,8 +1250,16 @@ def handle_sms():
         if "status" in lower:
             msg = "Projects:\n"
             if SETTINGS.get('projects'):
-                for key, project in list(SETTINGS['projects'].items())[:5]:
+                # Show all projects, but keep SMS length reasonable
+                project_count = 0
+                for key, project in SETTINGS['projects'].items():
                     msg += f"{project['name']}\n"
+                    project_count += 1
+                    # If message gets too long for SMS (160 chars typical limit)
+                    if len(msg) > 140 and project_count < len(SETTINGS['projects']):
+                        remaining = len(SETTINGS['projects']) - project_count
+                        msg += f"...and {remaining} more\n"
+                        break
             else:
                 msg += "None yet"
             resp.message(msg)
