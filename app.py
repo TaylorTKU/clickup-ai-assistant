@@ -154,7 +154,13 @@ TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
 # OpenAI configuration
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 if OPENAI_API_KEY:
-    openai.api_key = OPENAI_API_KEY
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=OPENAI_API_KEY)
+    except ImportError:
+        # Fallback for older version
+        openai.api_key = OPENAI_API_KEY
+        client = None
 
 # Startup message
 print("=" * 60)
@@ -1261,17 +1267,31 @@ Example input: "Mike found water damage at oak street needs fixing asap"
 Example output: {{"type": "create_task", "name": "Fix water damage", "assignee": "Mike", "project": "oak", "priority": 1}}
 """
 
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": prompt},
-                {"role": "user", "content": message}
-            ],
-            temperature=0.3,
-            max_tokens=200
-        )
+        # Try new OpenAI client syntax (v1.0+)
+        if client:
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": message}
+                ],
+                temperature=0.3,
+                max_tokens=200
+            )
+            result = json.loads(response.choices[0].message.content)
+        else:
+            # Fallback to old syntax (v0.28)
+            response = openai.ChatCompletion.create(
+                model="gpt-3.5-turbo",
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": message}
+                ],
+                temperature=0.3,
+                max_tokens=200
+            )
+            result = json.loads(response.choices[0].message.content)
         
-        result = json.loads(response.choices[0].message.content)
         print(f"🤖 OpenAI parsed: {result}")
         return result
         
