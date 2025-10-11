@@ -58,6 +58,7 @@ SETTINGS = load_settings()
 
 def sync_clickup_lists_on_startup():
     """Sync ClickUp lists with local settings on startup"""
+    # Note: This function should be called AFTER CLICKUP_KEY and WORKSPACE_ID are defined
     if not CLICKUP_KEY or not WORKSPACE_ID:
         print("⚠️  ClickUp not configured - skipping sync")
         return
@@ -138,11 +139,28 @@ def sync_clickup_lists_on_startup():
         print(f"⚠️  Error syncing with ClickUp: {e}")
         print("   Continuing with existing settings...")
 
-# Sync on startup
-sync_clickup_lists_on_startup()
+# Configuration from environment variables
+CLICKUP_KEY = os.getenv('CLICKUP_API_KEY', '')
+WORKSPACE_ID = os.getenv('WORKSPACE_ID', '')
+BASE_URL = 'https://api.clickup.com/api/v2'
 
-# Main interface HTML with project creation support
-HTML_PAGE = """
+# Twilio configuration
+TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN', '')
+TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
+
+# Startup message
+print("=" * 60)
+print("🏗️  ClickUp Construction Assistant")
+print("=" * 60)
+print(f"📌 ClickUp: {'Connected' if CLICKUP_KEY else 'Not configured'}")
+print(f"🏢 Workspace: {WORKSPACE_ID if WORKSPACE_ID else 'Not configured'}")
+print(f"📱 SMS: {'Enabled' if TWILIO_ACCOUNT_SID else 'Not configured'}")
+print(f"📁 Settings: {SETTINGS_FILE}")
+print("=" * 60)
+
+# Sync ClickUp lists on startup (AFTER configuration is loaded)
+sync_clickup_lists_on_startup()
 <!DOCTYPE html>
 <html>
 <head>
