@@ -1242,18 +1242,23 @@ Team members: {team_list}
 
 Parse this message: "{message}"
 
-Identify if this is:
-1. A project creation (return: type=create_project, project_name=name)
-2. A task creation (return: type=create_task, name=description, assignee=person if mentioned, project=project_key if mentioned, priority=1-4, due_date=YYYY-MM-DD if mentioned)
-3. A safety issue (automatically set priority=1)
-4. An inspection (include due date if mentioned)
-5. A status update (return: type=status_update, content=update text)
+IMPORTANT RULES:
+- For task name: Create a clean, professional description WITHOUT the person's name in it
+- For assignee: Extract the person's name if mentioned (just their first name)
+- For priority: Set to 1 if urgent/asap/emergency/critical, otherwise 3
+- Words like "asap", "urgent", "now", "immediately" = priority 1
+- For project: Match to available project keys (oak, maple, etc.)
 
-Return a JSON object with the parsed information. For tasks, clean up the language to be professional but keep the meaning.
-If it mentions rain, weather delays, or safety issues, mark as urgent (priority=1).
+Return a JSON object with:
+- type: "create_task" or "create_project"
+- name: Clean task description (NO PERSON NAMES in the task name)
+- assignee: Person's name if mentioned (optional)
+- project: Project key if detected (optional)
+- priority: 1 for urgent, 2 for high, 3 for normal, 4 for low
+- due_date: YYYY-MM-DD if mentioned (optional)
 
-Example input: "Mike found cracks in the foundation at oak street needs fixing asap"
-Example output: {{"type": "create_task", "name": "Fix foundation cracks", "assignee": "Mike", "project": "oak", "priority": 1}}
+Example input: "Mike found water damage at oak street needs fixing asap"
+Example output: {{"type": "create_task", "name": "Fix water damage", "assignee": "Mike", "project": "oak", "priority": 1}}
 """
 
         response = openai.ChatCompletion.create(
@@ -1267,6 +1272,7 @@ Example output: {{"type": "create_task", "name": "Fix foundation cracks", "assig
         )
         
         result = json.loads(response.choices[0].message.content)
+        print(f"🤖 OpenAI parsed: {result}")
         return result
         
     except Exception as e:
@@ -1553,9 +1559,16 @@ def build_task_from_ai_result(ai_result, original_message, from_number):
         'description': f"📱 SMS: {original_message}\nFrom: {from_number}\n{datetime.now().strftime('%Y-%m-%d %H:%M')}"
     }
     
+    # Only add [Assignee] prefix if their name isn't already in the task name
     if task_info['assignee']:
-        task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
+        # Check if assignee name is already in the task name
+        if task_info['assignee'].lower() not in task_info['name'].lower():
+            task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
+        else:
+            # Name is already in the task, don't duplicate
+            task_info['display_name'] = task_info['name']
     
+    # Find project list ID if specified
     if ai_result.get('project'):
         for key, proj in SETTINGS['projects'].items():
             if key == ai_result['project']:
@@ -1827,12 +1840,12 @@ def handle_sms():
     return str(resp), 200, {'Content-Type': 'text/xml'}
 
 def parse_command(message, default_assignee='', project_list_id=None):
-    """Full parser for web interface"""
+    """Full parser for web interface with OpenAI support"""
     
     original_message = message
     lower = message.lower()
     
-    # Check if this is a project creation command
+    # Check if this is a project creation command FIRST
     if any(phrase in lower for phrase in ['create project', 'new project', 'start project', 'make project']):
         # Extract project name
         project_name = None
@@ -1874,7 +1887,48 @@ def parse_command(message, default_assignee='', project_list_id=None):
             'trades': trades
         }
     
-    # Otherwise, parse as regular task
+    # Try OpenAI for natural language task creation
+    if OPENAI_API_KEY and len(message) > 15:
+        print(f"🔍 Web: Attempting OpenAI parse for: {message}")
+        ai_result = parse_with_openai(message)
+        
+        if ai_result and ai_result.get('type') == 'create_task':
+            # Build task from AI result
+            task_info = {
+                'type': 'create_task',
+                'name': ai_result.get('name', message),
+                'display_name': ai_result.get('name', message),
+                'priority': ai_result.get('priority', 3),
+                'assignee': ai_result.get('assignee', default_assignee),
+                'due_date': ai_result.get('due_date'),
+                'description': f"📱 Created via Construction Assistant\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                'tags': [],
+                'list_id': project_list_id
+            }
+            
+            # Add assignee to display name if present
+            if task_info['assignee']:
+                # Don't duplicate the name if it's already in the task name
+                if task_info['assignee'].lower() not in task_info['name'].lower():
+                    task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
+                else:
+                    task_info['display_name'] = task_info['name']
+            
+            # Handle priority
+            if task_info['priority'] == 1:
+                task_info['tags'].append('URGENT')
+            
+            # Find project if specified in AI result
+            if ai_result.get('project') and not task_info['list_id']:
+                for key, proj in SETTINGS.get('projects', {}).items():
+                    if key == ai_result['project']:
+                        task_info['list_id'] = proj['list_id']
+                        break
+            
+            print(f"✅ Web OpenAI task created: {task_info['display_name']}, Priority: {task_info['priority']}")
+            return task_info
+    
+    # Fall back to pattern-based parsing for structured commands
     task_info = {
         'type': 'create_task',
         'name': message,
