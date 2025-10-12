@@ -1,12 +1,12 @@
 # Add these modifications to your app.py file
 
 # 1. ADD THESE IMPORTS AT THE TOP (after existing imports):
-from database import (
-    init_db, migrate_from_json, get_db,
-    Project, TeamMember, Task, TimeEntry, SMSLog,
-    save_task_to_db, get_daily_summary, get_weekly_summary,
-    log_sms, mark_task_complete_in_db
-)
+#from database import (
+#    init_db, migrate_from_json, get_db,
+#    Project, TeamMember, Task, TimeEntry, SMSLog,
+#    save_task_to_db, get_daily_summary, get_weekly_summary,
+#    log_sms, mark_task_complete_in_db
+#)
 
 # 2. REPLACE THE load_settings() FUNCTION:
 def load_settings():
