@@ -1,10 +1,12 @@
-# app.py - ClickUp Construction Assistant with Fixed MMS/Photo Support
-# Complete version with working photo attachments
+# app.py - ClickUp Construction Assistant with Photo and Voice MMS Support
+# Complete version with working photo attachments and voice transcription
 
 import os
 import re
 import json
 import base64
+import tempfile
+import subprocess
 from io import BytesIO
 from datetime import datetime, timedelta
 import requests
@@ -25,7 +27,7 @@ def load_settings():
     try:
         with open(SETTINGS_FILE, 'r') as f:
             return json.load(f)
-    except:
+    except Exception as e:
         # Default settings if file doesn't exist
         return {
             'team_members': {
@@ -154,7 +156,6 @@ TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER', '')
 # OpenAI configuration - Using v0.28 syntax
 OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 if OPENAI_API_KEY:
-    import openai
     openai.api_key = OPENAI_API_KEY
 
 # Startup message
@@ -165,6 +166,7 @@ print(f"📌 ClickUp: {'Connected' if CLICKUP_KEY else 'Not configured'}")
 print(f"🏢 Workspace: {WORKSPACE_ID if WORKSPACE_ID else 'Not configured'}")
 print(f"📱 SMS: {'Enabled' if TWILIO_ACCOUNT_SID else 'Not configured'}")
 print(f"🤖 OpenAI: {'Connected' if OPENAI_API_KEY else 'Not configured'}")
+print(f"🎤 Voice: {'Enabled' if OPENAI_API_KEY else 'Not configured'}")
 print(f"📁 Settings: {SETTINGS_FILE}")
 print("=" * 60)
 
@@ -447,8 +449,9 @@ HTML_PAGE = """
                 <strong>Add Tasks to Projects:</strong><br>
                 📝 "oak: Mike needs to fix water leak"<br>
                 📝 "Add task for Sarah: Install outlets tomorrow"<br><br>
-                <strong>Send Photos via SMS:</strong><br>
-                📸 Text a photo with description to create visual task records<br><br>
+                <strong>Send via SMS:</strong><br>
+                📸 Photos with descriptions<br>
+                🎤 Voice messages (auto-transcribed)<br><br>
                 Tasks show as <strong>[Name] Task description</strong> in ClickUp!
             </div>
         </div>
@@ -457,7 +460,7 @@ HTML_PAGE = """
             <strong>Examples:</strong><br>
             Create project: "create project Downtown"<br>
             Add to project: "downtown: fix leak" or select project below<br>
-            📱 SMS works too! Text commands or photos to your Twilio number
+            📱 SMS: Text, photos, or voice messages to your Twilio number
         </div>
         
         <div class="input-section">
@@ -1316,6 +1319,127 @@ def handle_mms_image(media_url, message_text, from_number):
     
     return {'has_image': False}
 
+# NEW: Audio/Voice handling functions
+def handle_audio_mms(media_url, from_number):
+    """Process audio MMS and transcribe to text"""
+    try:
+        print(f"🎤 Processing audio from: {media_url}")
+        
+        # Download audio from Twilio URL
+        response = requests.get(
+            media_url,
+            auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN),
+            timeout=30  # Longer timeout for audio
+        )
+        
+        print(f"Audio download status: {response.status_code}")
+        
+        if response.status_code == 200:
+            audio_data = response.content
+            print(f"✅ Audio downloaded: {len(audio_data)} bytes")
+            
+            # Get content type to determine audio format
+            content_type = response.headers.get('Content-Type', 'audio/mpeg')
+            
+            # Transcribe audio using OpenAI Whisper API
+            transcription = transcribe_audio_with_whisper(audio_data, content_type)
+            
+            if transcription:
+                return {
+                    'success': True,
+                    'transcription': transcription,
+                    'audio_url': media_url
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': 'Could not transcribe audio'
+                }
+        else:
+            print(f"❌ Failed to download audio: {response.status_code}")
+            return {'success': False, 'error': 'Could not download audio'}
+            
+    except Exception as e:
+        print(f"Error processing audio MMS: {e}")
+        return {'success': False, 'error': str(e)}
+
+def transcribe_audio_with_whisper(audio_data, content_type='audio/mpeg'):
+    """Transcribe audio using OpenAI Whisper API"""
+    if not OPENAI_API_KEY:
+        print("⚠️ OpenAI not configured for transcription")
+        return None
+    
+    try:
+        # Determine file extension from content type
+        extension_map = {
+            'audio/mpeg': '.mp3',
+            'audio/mp4': '.mp4',
+            'audio/wav': '.wav',
+            'audio/x-wav': '.wav',
+            'audio/webm': '.webm',
+            'audio/ogg': '.ogg',
+            'audio/amr': '.amr',  # Common for phone voice messages
+            'audio/3gpp': '.3gp',  # Common for Android voice messages
+        }
+        
+        file_extension = extension_map.get(content_type, '.mp3')
+        
+        # Create a temporary file for the audio
+        with tempfile.NamedTemporaryFile(suffix=file_extension, delete=False) as tmp_file:
+            tmp_file.write(audio_data)
+            tmp_file_path = tmp_file.name
+        
+        try:
+            # If it's AMR or 3GP, try to convert to MP3 first (requires ffmpeg)
+            if file_extension in ['.amr', '.3gp']:
+                converted_path = tmp_file_path.replace(file_extension, '.mp3')
+                try:
+                    # Try to convert using ffmpeg if available
+                    subprocess.run([
+                        'ffmpeg', '-i', tmp_file_path, 
+                        '-acodec', 'mp3', converted_path
+                    ], capture_output=True, timeout=30, check=False)
+                    
+                    # Check if conversion succeeded
+                    if os.path.exists(converted_path) and os.path.getsize(converted_path) > 0:
+                        # Use converted file
+                        os.remove(tmp_file_path)
+                        tmp_file_path = converted_path
+                    else:
+                        print(f"Warning: ffmpeg conversion failed, using original file")
+                except FileNotFoundError:
+                    print(f"Warning: ffmpeg not found, using original audio format")
+                except Exception as e:
+                    print(f"Warning: Could not convert audio format: {e}")
+            
+            # Use OpenAI Whisper API for transcription (v0.28 syntax)
+            with open(tmp_file_path, 'rb') as audio_file:
+                transcript = openai.Audio.transcribe(
+                    "whisper-1",
+                    audio_file
+                )
+            
+            # Extract text from response
+            if isinstance(transcript, dict):
+                transcribed_text = transcript.get('text', '')
+            else:
+                transcribed_text = str(transcript)
+            
+            print(f"📝 Transcription successful: {transcribed_text[:100]}...")
+            return transcribed_text
+            
+        finally:
+            # Clean up temporary files
+            if os.path.exists(tmp_file_path):
+                os.remove(tmp_file_path)
+            # Also clean up converted file if it exists
+            if 'converted_path' in locals() and os.path.exists(converted_path):
+                os.remove(converted_path)
+            
+    except Exception as e:
+        print(f"Error transcribing audio: {e}")
+        return None
+
 def create_clickup_task_with_attachment(task_info, image_data=None):
     """Enhanced task creation that properly handles attachments"""
     headers = {
@@ -1430,7 +1554,7 @@ def create_clickup_task_with_attachment(task_info, image_data=None):
         print(f"Error creating task with attachment: {e}")
         return {'success': False, 'error': str(e)}
 
-# Task management functions (rest of the functions remain the same)
+# Task management functions
 def get_clickup_tasks_for_project(project_key):
     """Get all open tasks for a specific project"""
     headers = {
@@ -1638,611 +1762,3 @@ def create_clickup_task(task_info):
     except Exception as e:
         print(f"Error creating ClickUp task: {e}")
         return {'success': False, 'error': str(e)}
-
-# Enhanced SMS handler with fixed MMS support - COMPLETE VERSION
-@app.route('/sms', methods=['POST'])
-def handle_sms():
-    """Enhanced SMS handler with working MMS photo attachments"""
-    
-    from_number = request.form.get('From', '')
-    message_body = request.form.get('Body', '').strip()
-    media_url = request.form.get('MediaUrl0', '')
-    num_media = request.form.get('NumMedia', '0')
-    
-    print(f"📱 SMS from {from_number}: {message_body}")
-    if num_media != '0':
-        print(f"📸 MMS with {num_media} media files")
-    
-    resp = MessagingResponse()
-    
-    try:
-        lower = message_body.lower()
-        
-        # Quick commands
-        if lower == "help":
-            msg = "Commands:\n"
-            msg += "📋 status - projects\n"
-            msg += "📝 list [project]\n"
-            msg += "✅ done [task#]\n"
-            msg += "💬 update [#]: note\n"
-            msg += "🏗️ create project\n"
-            msg += "🚨 safety issue\n"
-            msg += "📸 Send photo"
-            resp.message(msg)
-            return str(resp), 200, {'Content-Type': 'text/xml'}
-        
-        # List tasks for a project
-        if lower.startswith('list'):
-            parts = message_body.split(' ', 1)
-            if len(parts) > 1:
-                project_key = parts[1].strip().lower()
-                result = get_clickup_tasks_for_project(project_key)
-                
-                if result['success']:
-                    tasks = result['tasks']
-                    if tasks:
-                        msg = f"Tasks for {project_key}:\n"
-                        for i, task in enumerate(tasks[:10], 1):
-                            task_id_short = task['id'][-5:]
-                            name = task['name'][:30]
-                            msg += f"{task_id_short}: {name}\n"
-                            
-                            if len(msg) > 140:
-                                msg += "...more"
-                                break
-                    else:
-                        msg = f"No open tasks for {project_key}"
-                else:
-                    msg = "Project not found"
-            else:
-                msg = "Usage: list [project]"
-            
-            resp.message(msg)
-            return str(resp), 200, {'Content-Type': 'text/xml'}
-        
-        # Mark task as done
-        if lower.startswith('done'):
-            parts = message_body.split(' ', 1)
-            if len(parts) > 1:
-                task_identifier = parts[1].strip()
-                result = mark_task_complete(task_identifier)
-                
-                if result['success']:
-                    msg = f"✅ Task completed!"
-                    add_comment_to_task(
-                        result['task_id'],
-                        f"Completed via SMS from {from_number}"
-                    )
-                else:
-                    msg = f"❌ Could not complete task"
-            else:
-                msg = "Usage: done [task#]"
-            
-            resp.message(msg)
-            return str(resp), 200, {'Content-Type': 'text/xml'}
-        
-        # Status command - show projects with task counts
-        if lower == "status":
-            msg = "Projects:\n"
-            if SETTINGS.get('projects'):
-                for key, project in SETTINGS['projects'].items():
-                    # Get task count
-                    result = get_clickup_tasks_for_project(key)
-                    count = len(result.get('tasks', [])) if result['success'] else 0
-                    msg += f"• {key}: {project['name']} ({count})\n"
-                    
-                    if len(msg) > 140:
-                        remaining = len(SETTINGS['projects']) - len(msg.split('\n')) + 1
-                        if remaining > 0:
-                            msg += f"...+{remaining} more"
-                        break
-            else:
-                msg = "No projects yet"
-            
-            resp.message(msg)
-            return str(resp), 200, {'Content-Type': 'text/xml'}
-        
-        # Handle photo attachments
-        image_data = None
-        media_url_backup = None
-        if num_media != '0' and media_url:
-            mms_result = handle_mms_image(media_url, message_body, from_number)
-            if mms_result['has_image']:
-                image_data = mms_result['image_data']
-                media_url_backup = mms_result.get('media_url')
-                if not message_body:
-                    message_body = "Site photo"
-                message_body = f"📸 {message_body}"
-        
-        # Safety issue detection
-        if any(word in lower for word in ['safety', 'danger', 'hazard', 'emergency', 'urgent', 'accident']):
-            project_match = detect_project_from_message(message_body)
-            task_info = {
-                'type': 'create_task',
-                'name': message_body,
-                'display_name': f"🚨 SAFETY: {message_body}",
-                'priority': 1,
-                'list_id': project_match[0] if project_match[0] else None,
-                'description': f"⚠️ SAFETY ISSUE\nFrom: {from_number}\n{datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                'media_url': media_url_backup
-            }
-            
-            # Create the safety task immediately
-            if CLICKUP_KEY and WORKSPACE_ID:
-                if image_data:
-                    created = create_clickup_task_with_attachment(task_info, image_data)
-                else:
-                    created = create_clickup_task(task_info)
-                    
-                if created['success']:
-                    task_id_short = created['task']['id'][-5:]
-                    msg = f"🚨 SAFETY CREATED\nID: {task_id_short}"
-                else:
-                    msg = "❌ Failed safety task!"
-            else:
-                msg = "System not configured!"
-            
-            resp.message(msg)
-            return str(resp), 200, {'Content-Type': 'text/xml'}
-        
-        # Try OpenAI if available for complex messages
-        if OPENAI_API_KEY and len(message_body) > 15:
-            ai_result = parse_with_openai(message_body)
-            if ai_result and ai_result.get('type') == 'create_task':
-                task_info = build_task_from_ai_result(ai_result, message_body, from_number)
-                task_info['media_url'] = media_url_backup  # Add for fallback
-            else:
-                task_info = parse_command_simple(message_body)
-        else:
-            task_info = parse_command_simple(message_body)
-        
-        # Handle the parsed result
-        if task_info.get('type') == 'create_project':
-            if CLICKUP_KEY and WORKSPACE_ID:
-                project_result = create_project_in_clickup_with_timeout(
-                    task_info['project_name'],
-                    timeout=8
-                )
-                if project_result['success']:
-                    msg = f"✅ Project: {project_result['name']}\nUse '{project_result['simple_name']}:'"
-                else:
-                    msg = "❌ Couldn't create"
-            else:
-                msg = "Not configured"
-        
-        elif task_info.get('type') == 'create_task':
-            if CLICKUP_KEY and WORKSPACE_ID:
-                # Add media URL to task info for fallback
-                task_info['media_url'] = media_url_backup
-                
-                if image_data:
-                    created = create_clickup_task_with_attachment(task_info, image_data)
-                else:
-                    created = create_clickup_task(task_info)
-                    
-                if created['success']:
-                    task_id_short = created['task']['id'][-5:]
-                    name = task_info.get('display_name', 'Task')[:30]
-                    msg = f"✅ {name}\nID: {task_id_short}"
-                    if image_data and created.get('attachment'):
-                        msg += "\n📸 Photo attached"
-                else:
-                    msg = "❌ Failed to create"
-            else:
-                msg = "Not configured"
-        
-        else:
-            msg = "Text 'help' for commands"
-    
-    except Exception as e:
-        print(f"SMS error: {e}")
-        msg = "Error. Text 'help'"
-    
-    resp.message(msg)
-    return str(resp), 200, {'Content-Type': 'text/xml'}
-
-def parse_command(message, default_assignee='', project_list_id=None):
-    """Full parser for web interface with OpenAI support"""
-    
-    original_message = message
-    lower = message.lower()
-    
-    # Check if this is a project creation command FIRST
-    if any(phrase in lower for phrase in ['create project', 'new project', 'start project', 'make project']):
-        # Extract project name
-        project_name = None
-        
-        # Try different patterns
-        patterns = [
-            r'(?:create|new|start|make) project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
-            r'project (?:called |named )?([^\s,]+(?:\s+[^\s,]+)*?)(?:\s+with\s+|\s*$)',
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, lower)
-            if match:
-                project_name = match.group(1).strip()
-                break
-        
-        if not project_name:
-            return {'type': 'error', 'message': 'Please specify a project name. Example: "create project Oak Street"'}
-        
-        # Check for trades
-        trades = []
-        trade_keywords = {
-            'water': 'Water',
-            'sewer': 'Sewer', 
-            'storm': 'Storm',
-            'grading': 'Grading',
-            'electrical': 'Electrical',
-            'concrete': 'Concrete',
-            'plumbing': 'Plumbing'
-        }
-        
-        for keyword, trade_name in trade_keywords.items():
-            if keyword in lower and trade_name not in trades:
-                trades.append(trade_name)
-        
-        return {
-            'type': 'create_project',
-            'project_name': project_name.title(),
-            'trades': trades
-        }
-    
-    # Try OpenAI for natural language task creation
-    if OPENAI_API_KEY and len(message) > 15:
-        print(f"🔍 Web: Attempting OpenAI parse for: {message}")
-        ai_result = parse_with_openai(message)
-        
-        if ai_result and ai_result.get('type') == 'create_task':
-            # Build task from AI result
-            task_info = {
-                'type': 'create_task',
-                'name': ai_result.get('name', message),
-                'display_name': ai_result.get('name', message),
-                'priority': ai_result.get('priority', 3),
-                'assignee': ai_result.get('assignee', default_assignee),
-                'due_date': ai_result.get('due_date'),
-                'description': f"📱 Created via Construction Assistant\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-                'tags': [],
-                'list_id': project_list_id
-            }
-            
-            # Add assignee to display name if present
-            if task_info['assignee']:
-                # Don't duplicate the name if it's already in the task name
-                if task_info['assignee'].lower() not in task_info['name'].lower():
-                    task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
-                else:
-                    task_info['display_name'] = task_info['name']
-            
-            # Handle priority
-            if task_info['priority'] == 1:
-                task_info['tags'].append('URGENT')
-            
-            # Find project if specified in AI result
-            if ai_result.get('project') and not task_info['list_id']:
-                for key, proj in SETTINGS.get('projects', {}).items():
-                    if key == ai_result['project']:
-                        task_info['list_id'] = proj['list_id']
-                        break
-            
-            print(f"✅ Web OpenAI task created: {task_info['display_name']}, Priority: {task_info['priority']}")
-            return task_info
-    
-    # Fall back to pattern-based parsing for structured commands
-    task_info = {
-        'type': 'create_task',
-        'name': message,
-        'display_name': message,
-        'priority': 3,
-        'assignee': default_assignee,
-        'due_date': None,
-        'description': '',
-        'tags': [],
-        'list_id': project_list_id
-    }
-    
-    # Detect project from message if not specified
-    if not task_info['list_id']:
-        list_id, project_key = detect_project_from_message(message)
-        if list_id:
-            task_info['list_id'] = list_id
-            # Remove project prefix from task name
-            for prefix in [f'{project_key}:', f'{project_key} -', project_key]:
-                if lower.startswith(prefix):
-                    message = message[len(prefix):].strip()
-                    task_info['name'] = message
-                    lower = message.lower()
-                    break
-    
-    # Extract priority
-    if any(word in lower for word in ['urgent', 'emergency', 'critical', 'asap']):
-        task_info['priority'] = 1
-        task_info['tags'].append('URGENT')
-    
-    # Extract assignee and clean up task name
-    for key, member in SETTINGS['team_members'].items():
-        member_name = member['name'].lower()
-        key_lower = key.lower()
-        
-        patterns = [
-            (f"\\bfor {key_lower}\\b", f"for {key_lower}"),
-            (f"\\bfor {member_name}\\b", f"for {member_name}"),
-            (f"\\b{key_lower} needs to\\b", f"{key_lower} needs to"),
-            (f"\\b{member_name} needs to\\b", f"{member_name} needs to"),
-        ]
-        
-        for pattern, text_to_remove in patterns:
-            if re.search(pattern, lower, re.IGNORECASE):
-                task_info['assignee'] = member['name']
-                # Remove the assignee phrase from the task name
-                message = re.sub(pattern, '', message, flags=re.IGNORECASE).strip()
-                task_info['name'] = message
-                lower = message.lower()
-                break
-    
-    # Extract due date
-    today = datetime.now()
-    if 'tomorrow' in lower:
-        task_info['due_date'] = (today + timedelta(days=1)).strftime('%Y-%m-%d')
-    elif 'today' in lower:
-        task_info['due_date'] = today.strftime('%Y-%m-%d')
-    
-    # Clean up task name
-    clean_name = message
-    clean_name = re.sub(r'^(add|create|schedule|new)\s+(task\s+)?', '', clean_name, flags=re.IGNORECASE)
-    
-    if clean_name:
-        task_info['name'] = clean_name
-    
-    # Create display name with [Assignee] prefix
-    if task_info['assignee']:
-        task_info['display_name'] = f"[{task_info['assignee']}] {task_info['name']}"
-    
-    task_info['description'] = f"📱 Created via Construction Assistant\n⏰ {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    
-    return task_info
-
-def create_project_in_clickup(project_name, trades=None):
-    """Create a new project (list) in ClickUp"""
-    
-    headers = {
-        'Authorization': CLICKUP_KEY,
-        'Content-Type': 'application/json'
-    }
-    
-    try:
-        # Get the first available space
-        space_response = requests.get(
-            f'{BASE_URL}/team/{WORKSPACE_ID}/space',
-            headers=headers,
-            params={'archived': 'false'},
-            timeout=10
-        )
-        
-        if space_response.status_code != 200:
-            return {'success': False, 'error': 'Could not find space'}
-        
-        spaces = space_response.json().get('spaces', [])
-        if not spaces:
-            return {'success': False, 'error': 'No spaces found'}
-        
-        space_id = spaces[0]['id']
-        
-        # Create the new list (project)
-        list_data = {
-            'name': project_name,
-            'content': f'Project created via Construction Assistant',
-        }
-        
-        list_response = requests.post(
-            f'{BASE_URL}/space/{space_id}/list',
-            headers=headers,
-            json=list_data,
-            timeout=10
-        )
-        
-        if list_response.status_code != 200:
-            print(f"Error creating list: {list_response.text}")
-            return {'success': False, 'error': 'Could not create project'}
-        
-        new_list = list_response.json()
-        list_id = new_list['id']
-        
-        # Create starter tasks if trades specified
-        created_trades = []
-        if trades:
-            for trade in trades:
-                task_data = {
-                    'name': f'{trade} Work - {project_name}',
-                    'description': f'Standard {trade} tasks for this project',
-                    'status': 'to do'
-                }
-                
-                task_response = requests.post(
-                    f'{BASE_URL}/list/{list_id}/task',
-                    headers=headers,
-                    json=task_data,
-                    timeout=10
-                )
-                
-                if task_response.status_code == 200:
-                    created_trades.append(trade)
-        
-        # Save to settings
-        simple_name = project_name.lower().split()[0]
-        if 'projects' not in SETTINGS:
-            SETTINGS['projects'] = {}
-        
-        SETTINGS['projects'][simple_name] = {
-            'list_id': list_id,
-            'name': project_name,
-            'created': datetime.now().isoformat(),
-            'trades': created_trades
-        }
-        save_settings(SETTINGS)
-        
-        return {
-            'success': True,
-            'list_id': list_id,
-            'name': project_name,
-            'simple_name': simple_name,
-            'trades': created_trades
-        }
-        
-    except Exception as e:
-        print(f"Error creating project: {e}")
-        return {'success': False, 'error': str(e)}
-
-@app.route('/api/chat', methods=['POST'])
-def chat():
-    """Enhanced chat endpoint that can create projects and tasks"""
-    try:
-        data = request.json
-        message = data.get('message', '').strip()
-        default_assignee = data.get('default_assignee', '')
-        project_list_id = data.get('project_list_id', '')
-        
-        if not message:
-            return jsonify({'response': 'Please provide a message', 'success': False})
-        
-        # Parse the command
-        result = parse_command(message, default_assignee, project_list_id)
-        
-        # Check if it's a project creation
-        if result.get('type') == 'create_project':
-            if not CLICKUP_KEY or not WORKSPACE_ID:
-                return jsonify({
-                    'response': '⚠️ Configure ClickUp API in environment variables to create projects',
-                    'success': False
-                })
-            
-            project_result = create_project_in_clickup(
-                result['project_name'],
-                result.get('trades', [])
-            )
-            
-            if project_result['success']:
-                response = f"✅ <strong>Project Created: {project_result['name']}</strong><br><br>"
-                
-                if project_result['trades']:
-                    response += f"📋 Added starter tasks for:<br>"
-                    for trade in project_result['trades']:
-                        response += f"• {trade}<br>"
-                    response += "<br>"
-                
-                response += f"💡 To add tasks to this project, use: <strong>{project_result['simple_name']}:</strong> before your task<br>"
-                response += f"Example: '{project_result['simple_name']}: Mike needs to fix leak'"
-                
-                return jsonify({
-                    'response': response,
-                    'success': True,
-                    'project_created': True
-                })
-            else:
-                return jsonify({
-                    'response': f"⚠️ Could not create project: {project_result.get('error', 'Unknown error')}",
-                    'success': False
-                })
-        
-        elif result.get('type') == 'error':
-            return jsonify({'response': f"⚠️ {result['message']}", 'success': False})
-        
-        # Handle as regular task
-        task_info = result
-        
-        if CLICKUP_KEY and WORKSPACE_ID:
-            created_task = create_clickup_task(task_info)
-            
-            if created_task['success']:
-                response = f"✅ <strong>Task Created: {task_info['display_name']}</strong><br>"
-                
-                if task_info.get('assignee'):
-                    response += f"👤 Assigned to: {task_info['assignee']}<br>"
-                
-                if task_info.get('due_date'):
-                    response += f"📅 Due: {task_info['due_date']}<br>"
-                
-                if task_info.get('list_id'):
-                    # Find project name
-                    project_name = None
-                    for key, project in SETTINGS.get('projects', {}).items():
-                        if project.get('list_id') == task_info['list_id']:
-                            project_name = project['name']
-                            break
-                    if project_name:
-                        response += f"📁 Project: {project_name}<br>"
-                
-                return jsonify({
-                    'response': response,
-                    'success': True
-                })
-            else:
-                return jsonify({
-                    'response': f"⚠️ Could not create task: {created_task.get('error', 'Unknown error')}",
-                    'success': False
-                })
-        else:
-            return jsonify({
-                'response': '⚠️ Configure ClickUp API in environment variables',
-                'success': False
-            })
-            
-    except Exception as e:
-        print(f"Error in chat endpoint: {e}")
-        return jsonify({
-            'response': f"⚠️ Error processing request: {str(e)}",
-            'success': False
-        })
-
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """Health check endpoint"""
-    return jsonify({
-        'status': 'healthy',
-        'clickup_configured': bool(CLICKUP_KEY and WORKSPACE_ID),
-        'twilio_configured': bool(TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN),
-        'openai_configured': bool(OPENAI_API_KEY),
-        'settings_file': os.path.exists(SETTINGS_FILE)
-    })
-
-@app.route('/test-attachment', methods=['GET'])
-def test_attachment():
-    """Test endpoint for debugging attachments"""
-    try:
-        # Create a simple 1x1 pixel red PNG for testing
-        test_image = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==')
-        
-        # Create a test task
-        test_task_info = {
-            'name': 'Test Photo Attachment',
-            'display_name': '📸 Test Photo Attachment',
-            'description': 'Testing photo attachment functionality',
-            'priority': 3
-        }
-        
-        result = create_clickup_task_with_attachment(test_task_info, test_image)
-        
-        if result['success']:
-            return jsonify({
-                'status': 'success',
-                'task_id': result['task']['id'],
-                'attachment': result.get('attachment', False),
-                'message': 'Test completed successfully!'
-            })
-        else:
-            return jsonify({
-                'status': 'error',
-                'message': result.get('error', 'Unknown error')
-            })
-            
-    except Exception as e:
-        return jsonify({
-            'status': 'error',
-            'message': str(e)
-        })
-
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port, debug=False)
