@@ -1808,27 +1808,27 @@ def handle_sms():
         # Status command - show projects with task counts
         if lower == "status":
             if SETTINGS.get('projects'):
-            # Just show project keys to fit more
-            keys = list(SETTINGS['projects'].keys())
+                # Just show project keys to fit more
+                keys = list(SETTINGS['projects'].keys())
         
-            # Build compact list
-            msg = "Projects:\n"
-            shown = 0
-            for key in keys:
-                # Keep it super short - just the key
-                line = f"{key}, "
-                if len(msg + line) < 140:  # Leave buffer for SMS
-                    msg += line
-                    shown += 1
-                else:
-                    break
+                # Build compact list
+                msg = "Projects:\n"
+                shown = 0
+                for key in keys:
+                    # Keep it super short - just the key
+                    line = f"{key}, "
+                    if len(msg + line) < 140:  # Leave buffer for SMS
+                        msg += line
+                        shown += 1
+                    else:
+                        break
         
-            # Remove last comma and add count if more exist
-            msg = msg.rstrip(', ')
-            if shown < len(keys):
-                msg += f"\n+{len(keys) - shown} more"
-        else:
-            msg = "No projects yet\nText: create project [name]"
+                # Remove last comma and add count if more exist
+                msg = msg.rstrip(', ')
+                if shown < len(keys):
+                    msg += f"\n+{len(keys) - shown} more"
+            else:
+                msg = "No projects yet\nText: create project [name]"
     
         resp.message(msg)
         return str(resp), 200, {'Content-Type': 'text/xml'}
