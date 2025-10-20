@@ -1742,7 +1742,7 @@ def handle_sms():
         lower = message_body.lower()
         
         # Quick commands
-        if lower == "help":
+        if lower == "commands" or lower == "menu":
             msg = "Commands:\n"
             msg += "📋 status - projects\n"
             msg += "📝 list [project]\n"
@@ -1807,24 +1807,31 @@ def handle_sms():
         
         # Status command - show projects with task counts
         if lower == "status":
-            msg = "Projects:\n"
             if SETTINGS.get('projects'):
-                for key, project in SETTINGS['projects'].items():
-                    # Get task count
-                    result = get_clickup_tasks_for_project(key)
-                    count = len(result.get('tasks', [])) if result['success'] else 0
-                    msg += f"• {key}: {project['name']} ({count})\n"
-                    
-                    if len(msg) > 140:
-                        remaining = len(SETTINGS['projects']) - len(msg.split('\n')) + 1
-                        if remaining > 0:
-                            msg += f"...+{remaining} more"
-                        break
-            else:
-                msg = "No projects yet"
-            
-            resp.message(msg)
-            return str(resp), 200, {'Content-Type': 'text/xml'}
+            # Just show project keys to fit more
+            keys = list(SETTINGS['projects'].keys())
+        
+            # Build compact list
+            msg = "Projects:\n"
+            shown = 0
+            for key in keys:
+                # Keep it super short - just the key
+                line = f"{key}, "
+                if len(msg + line) < 140:  # Leave buffer for SMS
+                    msg += line
+                    shown += 1
+                else:
+                    break
+        
+            # Remove last comma and add count if more exist
+            msg = msg.rstrip(', ')
+            if shown < len(keys):
+                msg += f"\n+{len(keys) - shown} more"
+        else:
+            msg = "No projects yet\nText: create project [name]"
+    
+        resp.message(msg)
+        return str(resp), 200, {'Content-Type': 'text/xml'}
         
         # Handle photo attachments (YOUR EXISTING WORKING CODE)
         image_data = None
