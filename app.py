@@ -1710,8 +1710,10 @@ def handle_sms():
     message_body = request.form.get('Body', '').strip()
     media_url = request.form.get('MediaUrl0', '')
     num_media = request.form.get('NumMedia', '0')
-
-print(f"📱 SMS from {from_number}: {message_body}")
+    
+    print(f"📱 SMS from {from_number}: {message_body}")
+    
+    # Check for media attachments
     if num_media != '0':
         print(f"📸 MMS with {num_media} media files")
         
